@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/codex.py", "timeout": 30 }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/codex.py", "timeout": 30 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|apply_patch)$",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/codex.py", "timeout": 30 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/codex.py", "timeout": 30 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/codex.py", "timeout": 30 }
+        ]
+      }
+    ]
+  }
+}

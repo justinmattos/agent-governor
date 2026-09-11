@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|ExitPlanMode",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/claude_code.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/claude_code.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "user_settings|project_settings|local_settings",
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/claude_code.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/claude_code.py", "timeout": 10 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "{python} {governor_root}/adapters/claude_code.py", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

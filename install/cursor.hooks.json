@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "{python} {governor_root}/adapters/cursor.py" }
+    ],
+    "beforeShellExecution": [
+      { "command": "{python} {governor_root}/adapters/cursor.py" }
+    ],
+    "afterShellExecution": [
+      { "command": "{python} {governor_root}/adapters/cursor.py" }
+    ],
+    "afterFileEdit": [
+      { "command": "{python} {governor_root}/adapters/cursor.py" }
+    ],
+    "sessionEnd": [
+      { "command": "{python} {governor_root}/adapters/cursor.py" }
+    ]
+  }
+}

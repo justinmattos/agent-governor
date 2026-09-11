@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Personal, machine-local layers — present and applied on your machine, never shared.
+# Each mirrors the instructions/*.local.md convention: copy a shared one to its .local
+# form to make your own, which the daemon loads/syncs but git ignores. A fresh clone
+# has none and runs only the shared set.
+
+# personal standing instructions
+instructions/*.local.md
+# personal skills (materialize under the bare name, e.g. create-pr.local/ -> /create-pr)
+skills/*.local/
+# personal policy rules (auto-loaded at daemon startup)
+govd/policy/rules/*.local.py

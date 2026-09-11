@@ -1,0 +1,371 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+SERVER = os.path.join(ROOT, "govd", "server.py")
+HOME = os.path.expanduser(os.environ.get("GOVD_HOME", "~/.govd"))
+PORT_FILE = os.path.join(HOME, "port")
+PID_FILE = os.path.join(HOME, "govd.pid")
+AUDIT_FILE = os.path.join(HOME, "audit.jsonl")
+OUT_LOG = os.path.join(HOME, "govd.out.log")
+from govd.config import LAUNCH_AGENT_LABEL as LABEL, LAUNCH_AGENT_PLIST as PLIST
+
+
+def _port():
+    if os.environ.get("GOVD_PORT"):
+        return int(os.environ["GOVD_PORT"])
+    try:
+        with open(PORT_FILE) as fh:
+            return int(fh.read().strip())
+    except Exception:
+        return 8787
+
+
+def _health():
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{_port()}/v1/health", timeout=2) as r:
+            return json.loads(r.read())
+    except Exception:
+        return None
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _pid():
+    try:
+        with open(PID_FILE) as fh:
+            return int(fh.read().strip())
+    except Exception:
+        return None
+
+
+def start(_):
+    if _health():
+        print("govd already running on port", _port())
+        return 0
+    os.makedirs(HOME, exist_ok=True)
+    log = open(OUT_LOG, "a")
+    subprocess.Popen(
+        [sys.executable, SERVER], stdout=log, stderr=log, start_new_session=True
+    )
+    for _ in range(20):
+        time.sleep(0.2)
+        if _health():
+            print("govd started on port", _port())
+            return 0
+    print("govd failed to start; see", OUT_LOG, file=sys.stderr)
+    return 1
+
+
+def stop(_):
+    pid = _pid()
+    if pid and _alive(pid):
+        os.kill(pid, signal.SIGTERM)
+        print("stopped govd pid", pid)
+        if os.path.exists(PLIST):
+            print("note: LaunchAgent is installed and will restart govd — run 'govctl uninstall-agent' to stop for good")
+        return 0
+    print("govd not running")
+    return 0
+
+
+def restart(args):
+    stop(args)
+    time.sleep(0.5)
+    return start(args)
+
+
+def status(_):
+    h = _health()
+    if not h:
+        print("govd: NOT running (port", _port(), ")")
+    else:
+        print(f"govd: running  pid={h['pid']} port={_port()} uptime={h['uptime_seconds']}s v{h['version']}")
+        print("rules:", ", ".join(h["rules"]))
+    print("launchagent:", "installed" if os.path.exists(PLIST) else "not installed")
+    print("audit log:", AUDIT_FILE)
+    return 0
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
+
+
+def _clean(text):
+    return _CONTROL.sub("", text)
+
+
+def tail(args):
+    n = int(args[0]) if args else 20
+    try:
+        with open(AUDIT_FILE) as fh:
+            lines = fh.readlines()[-n:]
+    except FileNotFoundError:
+        print("no audit log yet")
+        return 0
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        mark = {"deny": "DENY", "block": "BLOCK", "ask": "ASK "}.get(e.get("decision"), "ok  ")
+        print(_clean(f"{e.get('ts', '')[11:19]} {mark} {e.get('agent', ''):11} {e.get('event', ''):16} {e.get('target', '')[:70]}"))
+    return 0
+
+
+SAMPLES = [
+    ("benign shell", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "ls"}}, "allow"),
+    ("rm -rf /", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -rf /"}}, "deny"),
+    ("junk comment", {"agent": "t", "event": "post_tool_use", "tool": "file_edit",
+                       "input": {"file_path": "/tmp/x.ts", "new_string": "// bump counter\ni++;", "old_string": "i++;"}}, "block"),
+    ("git status ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git status"}}, "allow"),
+    ("git push -> gt submit", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git push -u origin HEAD"}}, "deny", "prefer_graphite"),
+    ("git commit -> gt", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git commit -m x"}}, "deny", "prefer_graphite"),
+    ("git switch -> gt checkout", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git switch main"}}, "deny", "prefer_graphite"),
+    ("git branch -m -> gt rename", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git branch -m newname"}}, "deny", "prefer_graphite"),
+    ("git branch -d ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git branch -d old"}}, "allow"),
+    ("git checkout file ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "git checkout -- src/x.ts"}}, "allow"),
+    ("gh pr merge blocked", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "gh pr merge 12"}}, "deny", "prefer_graphite"),
+    ("rm -rf /* -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -rf /*"}}, "deny"),
+    ("rm -fr / -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -fr /"}}, "deny"),
+    ("rm -r -f ~ -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -r -f ~"}}, "deny"),
+    ("rm -rf quoted $HOME -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -rf \"$HOME\""}}, "deny"),
+    ("sh -c wipe -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "sh -c 'rm -rf /'"}}, "deny"),
+    ("chmod -R 000 / -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "chmod -R 000 /"}}, "deny"),
+    ("redirect over /dev/sda -> deny", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "cat x > /dev/sda"}}, "deny"),
+    ("rm -rf ./build ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -rf ./build"}}, "allow"),
+    ("rm -rf /tmp/foo ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "rm -rf /tmp/foo"}}, "allow"),
+    ("echo of a wipe string ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "echo 'rm -rf /' > notes.txt"}}, "allow"),
+    ("govctl stop -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl stop"}}, "ask"),
+    ("govctl hooks-sync -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl hooks-sync"}}, "ask"),
+    ("govctl status ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl status"}}, "allow"),
+    ("repoint port file -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "echo 1 > ~/.govd/port"}}, "ask"),
+    ("read audit log ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "tail -n 5 ~/.govd/audit.jsonl"}}, "allow"),
+    ("kill daemon -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "kill $(cat ~/.govd/govd.pid)"}}, "ask"),
+    ("edit adapter -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
+                             "input": {"file_path": os.path.join(ROOT, "adapters", "claude_code.py"), "old_string": "a", "new_string": "b"}}, "ask"),
+    ("edit hook config -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
+                                 "input": {"file_path": os.path.expanduser("~/.claude/settings.json"), "old_string": "a", "new_string": "b"}}, "ask"),
+    ("disableAllHooks -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
+                                "input": {"file_path": "/tmp/proj/.claude/settings.local.json", "content": "{\"disableAllHooks\": true}"}}, "ask"),
+    ("edit skill ok", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
+                       "input": {"file_path": os.path.join(ROOT, "skills", "triage-merge-conflicts", "SKILL.md"), "old_string": "a", "new_string": "b"}}, "allow"),
+]
+
+
+def selftest(_):
+    if not _health():
+        print("govd not running; start it first", file=sys.stderr)
+        return 1
+    import shutil
+    import tempfile
+    disabled = tempfile.NamedTemporaryFile("w", suffix=".settings.json", delete=False)
+    disabled.write('{"disableAllHooks": true}')
+    disabled.close()
+
+    # A plan is recorded on each edit and validated once at Stop. Lay down a
+    # malformed and a conforming plan in real .context/plans dirs so the stop
+    # event can read them from disk.
+    plan_ok = (
+        "## Summary\nSwap a manual post-release step for an automatic one so nobody has to remember it.\n\n"
+        "## Today\nSomeone runs the cleanup by hand after each release, and it is often forgotten, leaving stale data around.\n\n"
+        "## After\nThe cleanup runs on its own once a release finishes, so stale data never lingers and no one has to remember it.\n\n"
+        "## Changes\n- Run the cleanup automatically once a release finishes. [K1]\n\n"
+        "## Appendix\n- [K1] `scripts/cleanup.sh` — the cleanup this triggers automatically\n"
+    )
+    plan_root = tempfile.mkdtemp()
+    bad_ws = os.path.join(plan_root, "bad")
+    ok_ws = os.path.join(plan_root, "ok")
+    os.makedirs(os.path.join(bad_ws, ".context", "plans"))
+    os.makedirs(os.path.join(ok_ws, ".context", "plans"))
+    bad_plan = os.path.join(bad_ws, ".context", "plans", "p.md")
+    ok_plan = os.path.join(ok_ws, ".context", "plans", "p.md")
+    with open(bad_plan, "w") as fh:
+        fh.write("## Summary\n\nstub\n")
+    with open(ok_plan, "w") as fh:
+        fh.write(plan_ok)
+
+    samples = SAMPLES + [
+        ("disableAllHooks config change -> block",
+         {"agent": "t", "event": "config_change", "tool": None,
+          "input": {"source": "local_settings", "file_path": disabled.name}}, "block"),
+        ("plan edit recorded, not blocked",
+         {"agent": "t", "event": "post_tool_use", "tool": "file_edit",
+          "input": {"file_path": bad_plan}, "session_id": "selftest-planbad", "cwd": bad_ws}, "allow"),
+        ("stop with malformed plan -> block",
+         {"agent": "t", "event": "stop", "tool": None, "input": {},
+          "session_id": "selftest-planbad", "cwd": bad_ws}, "block", "plan_format"),
+        ("conforming plan edit recorded",
+         {"agent": "t", "event": "post_tool_use", "tool": "file_edit",
+          "input": {"file_path": ok_plan}, "session_id": "selftest-planok", "cwd": ok_ws}, "allow"),
+        ("stop with conforming plan -> allow",
+         {"agent": "t", "event": "stop", "tool": None, "input": {},
+          "session_id": "selftest-planok", "cwd": ok_ws}, "allow"),
+        ("ExitPlanMode malformed proposal -> deny",
+         {"agent": "t", "event": "pre_tool_use", "tool": "plan", "input": {"plan": "## Context\n\nstub only"}}, "deny", "plan_format"),
+        ("ExitPlanMode conforming proposal -> allow",
+         {"agent": "t", "event": "pre_tool_use", "tool": "plan", "input": {"plan": plan_ok}}, "allow"),
+    ]
+    loaded = set((_health() or {}).get("rules") or [])
+    ok = True
+    for sample in samples:
+        name, payload, expect = sample[0], sample[1], sample[2]
+        rule = sample[3] if len(sample) > 3 else None
+        if rule and rule not in loaded:
+            # A personal rule this sample exercises is not installed here (e.g. a fresh
+            # clone or CI). Skip rather than fail — the shared rules still gate.
+            print(f"  SKIP  {name}: rule '{rule}' not loaded")
+            continue
+        payload.setdefault("session_id", "selftest")
+        payload.setdefault("cwd", "/tmp")
+        data = json.dumps(payload).encode()
+        req = urllib.request.Request(f"http://127.0.0.1:{_port()}/v1/evaluate", data=data,
+                                     headers={"Content-Type": "application/json"})
+        got = json.loads(urllib.request.urlopen(req, timeout=2).read())["decision"]
+        mark = "PASS" if got == expect else "FAIL"
+        ok = ok and got == expect
+        print(f"  {mark}  {name}: expected {expect}, got {got}")
+    try:
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_port()}/v1/evaluate", data=b"{}",
+                                                      headers={"Content-Type": "text/plain"}), timeout=2)
+        got = "accepted"
+    except urllib.error.HTTPError as exc:
+        got = str(exc.code)
+    ok = ok and got == "415"
+    print(f"  {'PASS' if got == '415' else 'FAIL'}  non-JSON content type rejected: expected 415, got {got}")
+    from instrsync.sync import render
+    expected = render("cursor")
+    proc = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "adapters", "cursor.py")],
+        input=json.dumps({"hook_event_name": "sessionStart", "conversation_id": "selftest", "workspace_roots": ["/tmp"]}),
+        capture_output=True, text=True, timeout=10,
+    )
+    got = (json.loads(proc.stdout) if proc.stdout.strip() else {}).get("additional_context", "")
+    ok = ok and got == expected
+    print(f"  {'PASS' if got == expected else 'FAIL'}  cursor sessionStart injects instructions: expected {len(expected)} bytes, got {len(got)}")
+    for sid in ("selftest", "selftest-planbad", "selftest-planok"):
+        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_port()}/v1/evaluate",
+                                                      data=json.dumps({"event": "session_end", "session_id": sid}).encode(),
+                                                      headers={"Content-Type": "application/json"}), timeout=2)
+    os.unlink(disabled.name)
+    shutil.rmtree(plan_root, ignore_errors=True)
+    return 0 if ok else 1
+
+
+PLIST_TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{python}</string>
+    <string>{server}</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>{out}</string>
+  <key>StandardErrorPath</key><string>{out}</string>
+</dict>
+</plist>
+"""
+
+
+def install_agent(_):
+    os.makedirs(os.path.dirname(PLIST), exist_ok=True)
+    os.makedirs(HOME, exist_ok=True)
+    with open(PLIST, "w") as fh:
+        fh.write(PLIST_TEMPLATE.format(label=LABEL, python=sys.executable, server=SERVER, out=OUT_LOG))
+    subprocess.run(["launchctl", "unload", PLIST], capture_output=True)
+    r = subprocess.run(["launchctl", "load", PLIST], capture_output=True, text=True)
+    if r.returncode != 0:
+        print("launchctl load failed:", r.stderr, file=sys.stderr)
+        return 1
+    for _ in range(20):
+        time.sleep(0.2)
+        if _health():
+            print("LaunchAgent installed and govd running on port", _port())
+            return 0
+    print("LaunchAgent installed but govd not yet healthy; check", OUT_LOG, file=sys.stderr)
+    return 1
+
+
+def uninstall_agent(_):
+    if os.path.exists(PLIST):
+        subprocess.run(["launchctl", "unload", PLIST], capture_output=True)
+        os.remove(PLIST)
+        print("LaunchAgent removed")
+    else:
+        print("LaunchAgent not installed")
+    return 0
+
+
+def skills_sync(args):
+    from skillsync.sync import main as _skills_main
+    return _skills_main(["sync"] + args)
+
+
+def skills_list(args):
+    from skillsync.sync import main as _skills_main
+    return _skills_main(["list"] + args)
+
+
+def instructions_sync(args):
+    from instrsync.sync import main as _instr_main
+    return _instr_main(["sync"] + args)
+
+
+def instructions_list(args):
+    from instrsync.sync import main as _instr_main
+    return _instr_main(["list"] + args)
+
+
+def instructions_show(args):
+    from instrsync.sync import main as _instr_main
+    return _instr_main(["show"] + args)
+
+
+def hooks_sync(args):
+    from hooksync.sync import main as _hooks_main
+    return _hooks_main(["sync"] + args)
+
+
+def hooks_list(args):
+    from hooksync.sync import main as _hooks_main
+    return _hooks_main(["list"] + args)
+
+
+COMMANDS = {
+    "start": start, "stop": stop, "restart": restart, "status": status,
+    "tail": tail, "test": selftest, "install-agent": install_agent,
+    "uninstall-agent": uninstall_agent,
+    "hooks-sync": hooks_sync, "hooks-list": hooks_list,
+    "skills-sync": skills_sync, "skills-list": skills_list,
+    "instructions-sync": instructions_sync, "instructions-list": instructions_list,
+    "instructions-show": instructions_show,
+}
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        print("usage: govctl {" + " | ".join(COMMANDS) + "} [args]", file=sys.stderr)
+        return 2
+    return COMMANDS[sys.argv[1]](sys.argv[2:])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  selftest:
+    name: ${{ matrix.os }} · python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is the supported platform; Linux catches accidental platform coupling
+        # in the adapters and syncers, which are meant to stay portable.
+        os: [macos-latest, ubuntu-latest]
+        python: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Byte-compile every module
+        run: python -m compileall -q .
+
+      - name: Start the daemon
+        run: bin/govctl start
+
+      - name: Hook config renders against this checkout
+        # Writes nothing. Fails if the {python} / {governor_root} placeholders in
+        # install/*.json stop resolving, which is what makes a fresh clone work.
+        run: |
+          bin/govctl hooks-sync --dry-run
+          bin/govctl hooks-sync --dry-run | grep -qE "would (create|update)" \
+            || { echo "hook placeholders did not render a pending change"; exit 1; }
+
+      - name: Self-check the rules
+        run: bin/govctl test
+
+      - name: Adapter errors
+        if: failure()
+        run: cat ~/.govd/adapter-errors.log ~/.govd/govd.out.log 2>/dev/null || true
+
+      - name: Stop the daemon
+        if: always()
+        run: bin/govctl stop || true
