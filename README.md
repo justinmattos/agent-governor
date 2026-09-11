@@ -127,72 +127,9 @@ status` lists it; `govctl test` skips its samples where it isn't loaded.
 
 This maintainer keeps two as personal: `prefer_graphite` (steers `git`/`gh` workflow
 commands to Graphite `gt`, blocks merges, inert outside Graphite repos) and
-`plan_format` (below). Because they're gitignored they don't reach the shared repo — a
-teammate who wants them writes their own.
-
-## The plan format
-
-The personal `plan_format` rule (above) enforces one shape on every plan an agent
-proposes, so a plan is fast for a human to review and unambiguous for an agent to
-build from. It's shown here as a worked example of a personal rule; it isn't part of
-the shared rule set. The shape
-front-loads a **code-free, plain-language** account of what changes, and reserves
-every technical pointer to a single **Appendix** at the end:
-
-```markdown
-# Plan: <short title>
-
-## Summary
-<1-3 plain sentences: what changes for the user or product, and why.>
-
-## Today
-<How it behaves now, in plain language a non-engineer could follow.>
-
-## After
-<How it will behave once this lands. Same plain language.>
-
-## Changes
-- <One change, in plain language.> [K1]
-- <Another change.> [K2] [K3]
-
-## Appendix
-- [K1] `path/to/file.ext` - what lives here and what you will touch
-- [K2] `path/to/other.ext:symbol` - ...
-- [K3] `a command or config key` - ...
-```
-
-Three invariants are checked, and a rejection names exactly which one failed and
-how to fix it:
-
-- **Sections and order.** `Summary`, `Today`, `After`, `Changes`, `Appendix` are
-  all present; Summary leads and Appendix is last. Summary/Today/After must be
-  real prose, not stubs.
-- **Prose stays prose.** Summary / Today / After / Changes carry no code: no
-  backticks, code fences, file paths, or `symbol()` — every one of those belongs
-  in the Appendix. (Links are fine.)
-- **Changes bridge to the Appendix.** Each change references at least one `[key]`,
-  and every referenced key is defined once in the Appendix with a concrete pointer
-  in backticks.
-
-**Two surfaces, one validator.** A plan reaches a human two ways, and each is
-gated where it actually happens:
-
-- **Proposed in plan mode (`ExitPlanMode`).** When an agent proposes a plan — the
-  Claude Code / Conductor flow, where the harness writes `.context/plans/` itself at
-  propose time, not through a governed tool — the proposal carries the plan text
-  inline. govd **denies** it until it conforms, so the agent reformats and
-  re-proposes without the plan ever being written out.
-- **Written to `.context/plans/*.md`.** When an agent writes a plan file directly
-  (Codex via `apply_patch`, or any `Write`), the daemon records each file the
-  session touches and checks them only at the turn boundary (`Stop`), reading the
-  finished files from disk — so the plan can be drafted across many edits without
-  being interrupted, and the agent's built-in cap on consecutive `Stop` blocks keeps
-  a plan it truly can't fix from looping forever.
-
-Either way the rejection names exactly which invariant failed and carries the full
-template, so an agent that never saw the format learns it on the first block. Cursor
-has no plan-mode proposal or `Stop` hook wired here, so its plans are recorded but
-unchecked.
+`plan_format` (holds every agent plan to a fixed plain-language shape). Being
+gitignored, they don't reach the shared repo — a teammate who wants them writes
+their own.
 
 ## Adding a rule
 
