@@ -1,0 +1,21 @@
+{
+  "retire": ["mongodb"],
+  "servers": {
+    "mongodb-staging": {
+      "type": "stdio",
+      "command": "/absolute/path/to/node",
+      "args": ["/absolute/path/to/mongodb-mcp-server/dist/esm/index.js"],
+      "env": {
+        "MDB_MCP_CONNECTION_STRING": "mongodb+srv://USER:PASSWORD@staging.example.net/",
+        "MDB_MCP_READ_ONLY": "true"
+      },
+      "write_tools": ["insert-many", "update-many", "delete-many", "drop-collection", "drop-database",
+                      "drop-index", "create-index", "create-collection", "rename-collection",
+                      "atlas-local-create-deployment", "atlas-local-delete-deployment"]
+    },
+    "internal-api": {
+      "type": "http",
+      "url": "https://mcp.example.com"
+    }
+  }
+}

@@ -16,7 +16,7 @@ HOME = os.path.expanduser("~")
 # these without a prompt; a session anywhere else still has to ask.
 REPO_ROOTS = [
     os.path.realpath(os.path.join(REPO_ROOT, d))
-    for d in ("adapters", "govd", "bin", "install")
+    for d in ("adapters", "govd", "bin", "install", "profilesync", "profiles")
 ]
 # The running governor: its state, each agent's live hook config, the
 # LaunchAgent. Changing any of these alters governance for every session, not
@@ -51,7 +51,7 @@ MUTATORS = {
     "rmdir", "install", "rsync", "dd", "shred", "unlink", "patch",
 }
 KILL = {"kill", "pkill", "killall"}
-GOVCTL_CONTROL = {"stop", "restart", "install-agent", "uninstall-agent", "hooks-sync"}
+GOVCTL_CONTROL = {"stop", "restart", "install-agent", "uninstall-agent", "hooks-sync", "profiles-sync"}
 SETTINGS_FILES = {"settings.json", "settings.local.json"}
 
 _WRITE_REDIRECT_OP = re.compile(r"^\d*>>?(&\d*)?$|^&>>?$")
@@ -78,6 +78,17 @@ def _spellings_for(roots):
 
 SPELLINGS = _spellings_for(PROTECTED)
 SPELLINGS_LIVE = _spellings_for(LIVE_ROOTS)
+PROFILESYNC_MANIFEST = os.path.join(GOVD_HOME, "profilesync.json")
+
+
+def _generated_agents():
+    """Agent files profilesync wrote. Each grants MCP access, so it is as live as a hook config."""
+    try:
+        with open(PROFILESYNC_MANIFEST, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        return [os.path.realpath(p) for t in manifest.values() for p in t.get("agents", [])]
+    except Exception:
+        return []
 
 
 def _session_in_repo(cwd):
@@ -250,8 +261,9 @@ class ProtectGovernor(Rule):
                 rule=self.name,
             )
         in_repo = _session_in_repo(event.cwd)
-        roots = LIVE_ROOTS if in_repo else PROTECTED
-        spellings = SPELLINGS_LIVE if in_repo else SPELLINGS
+        generated = _generated_agents()
+        roots = (LIVE_ROOTS if in_repo else PROTECTED) + generated
+        spellings = (SPELLINGS_LIVE if in_repo else SPELLINGS) + _spellings_for(generated)
         if event.tool == "shell":
             what = _check_shell(data.get("command") or "", event.cwd, roots, spellings)
         else:

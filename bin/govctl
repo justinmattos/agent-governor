@@ -159,6 +159,9 @@ SAMPLES = [
     ("echo of a wipe string ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "echo 'rm -rf /' > notes.txt"}}, "allow"),
     ("govctl stop -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl stop"}}, "ask"),
     ("govctl hooks-sync -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl hooks-sync"}}, "ask"),
+    ("govctl profiles-sync -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl profiles-sync"}}, "ask"),
+    ("edit server registry -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
+                                     "input": {"file_path": os.path.join(ROOT, "profiles", "servers.local.json"), "old_string": "a", "new_string": "b"}}, "ask"),
     ("govctl status ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl status"}}, "allow"),
     ("repoint port file -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "echo 1 > ~/.govd/port"}}, "ask"),
     ("read audit log ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "tail -n 5 ~/.govd/audit.jsonl"}}, "allow"),
@@ -433,6 +436,21 @@ def instructions_show(args):
     return _instr_main(["show"] + args)
 
 
+def profiles_sync(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["sync"] + args)
+
+
+def profiles_list(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["list"] + args)
+
+
+def profile(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["run"] + args)
+
+
 def hooks_sync(args):
     from hooksync.sync import main as _hooks_main
     return _hooks_main(["sync"] + args)
@@ -451,6 +469,7 @@ COMMANDS = {
     "skills-sync": skills_sync, "skills-list": skills_list,
     "instructions-sync": instructions_sync, "instructions-list": instructions_list,
     "instructions-show": instructions_show,
+    "profiles-sync": profiles_sync, "profiles-list": profiles_list, "profile": profile,
 }
 
 

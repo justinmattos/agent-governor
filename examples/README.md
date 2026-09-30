@@ -48,6 +48,24 @@ you keep one private, which is why this template lives under `examples/`. Use th
 key to restrict *which* agents get it, `agents/<agent>.md` for per-agent mechanics, and
 `references/` for material the agent should read on demand.
 
+## `profiles/` — MCP servers as agent profiles
+
+```bash
+cp examples/profiles/servers.local.json profiles/servers.local.json
+cp examples/profiles/investigator.local.md profiles/staging-investigator.local.md
+$EDITOR profiles/servers.local.json profiles/*.local.md
+bin/govctl profiles-sync --dry-run   # see what it will write and remove
+bin/govctl profiles-sync
+```
+
+`servers.local.json` is the registry: every MCP server a profile can use, in `.mcp.json`
+form, plus `write_tools` (blocked when a profile says `readonly: true`). It holds
+connection strings and tokens, so it only ever exists as a gitignored `.local.json`.
+`retire` names older everyday entries the registry replaces; a sync removes those and
+every registry server from your everyday config. Each `*.local.md` profile becomes a
+Claude Code subagent (`~/.claude/agents/<name>.md`) and can be started as its own
+session with `bin/govctl profile <name>`.
+
 ## A new policy rule
 
 There's no rule template here — the shared rules in `govd/policy/rules/` are the working

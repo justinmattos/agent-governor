@@ -1,0 +1,200 @@
+"""Engine + CLI for profilesync.
+
+Usage (normally via `bin/govctl`):
+    python -m profilesync.sync list
+    python -m profilesync.sync sync [--dry-run] [--only name,name]
+    python -m profilesync.sync run <profile> [claude args...]
+
+A profile is `profiles/<name>.md` (shared) or `profiles/<name>.local.md` (personal,
+gitignored): `key: value` frontmatter plus a body that becomes the worker's brief.
+    name: prod-investigator
+    description: when the main session should delegate here
+    servers: [mongodb-prod, miter-mcp-prod]   names from the server registry
+    readonly: true                            block each server's `write_tools`
+    model: sonnet                             optional
+    tools: [Read, Grep, mcp__mongodb-prod]    optional allowlist; omit to inherit
+
+Server definitions live in `profiles/servers.local.json` (gitignored — it holds
+credentials), in the same schema as a `.mcp.json` entry plus two governor keys that
+are never emitted: `write_tools` (tool names `readonly` blocks) and `writable`.
+Its top-level `retire` list names older everyday entries the registry replaces.
+Every registry server is profile-owned: a sync removes it, and anything under
+`retire`, from each agent's everyday config.
+"""
+import json
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from govd import config
+from profilesync.targets import ALL_TARGETS, TARGETS, _atomic_write
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROFILES_DIR = os.path.join(ROOT, "profiles")
+REGISTRY = os.path.join(PROFILES_DIR, "servers.local.json")
+MANIFEST = os.path.join(config.GOVD_HOME, "profilesync.json")
+RUN_DIR = os.path.join(config.GOVD_HOME, "profiles")
+GOVERNOR_KEYS = {"write_tools", "writable"}
+
+_FM_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
+_KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):\s?(.*)$")
+
+
+def _value(raw):
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        return [p.strip().strip("\"'") for p in raw[1:-1].split(",") if p.strip()]
+    if raw.lower() in ("true", "false"):
+        return raw.lower() == "true"
+    return raw.strip("\"'")
+
+
+def parse(path):
+    with open(path) as fh:
+        m = _FM_RE.match(fh.read())
+    if not m:
+        raise ValueError(f"{path}: no frontmatter")
+    profile = {"body": m.group(2)}
+    for line in m.group(1).split("\n"):
+        km = _KEY_RE.match(line)
+        if km:
+            profile[km.group(1)] = _value(km.group(2))
+    for key in ("name", "description", "servers"):
+        if not profile.get(key):
+            raise ValueError(f"{path}: missing `{key}`")
+    return profile
+
+
+def discover():
+    if not os.path.isdir(PROFILES_DIR):
+        return []
+    return [os.path.join(PROFILES_DIR, f) for f in sorted(os.listdir(PROFILES_DIR))
+            if f.endswith(".md") and f != "README.md"]
+
+
+def load_registry():
+    try:
+        with open(REGISTRY) as fh:
+            return json.load(fh)
+    except FileNotFoundError:
+        return {"servers": {}}
+
+
+def resolve(profile, registry):
+    """(servers to emit, tools to disallow) for one profile."""
+    defs = registry.get("servers") or {}
+    missing = [s for s in profile["servers"] if s not in defs]
+    if missing:
+        raise ValueError(f"profile {profile['name']}: unknown server(s) {', '.join(missing)}")
+    servers, disallowed = {}, []
+    for s in profile["servers"]:
+        servers[s] = {k: v for k, v in defs[s].items() if k not in GOVERNOR_KEYS}
+        if profile.get("readonly"):
+            disallowed += [f"mcp__{s}__{t}" for t in defs[s].get("write_tools") or []]
+    return servers, disallowed
+
+
+def _manifest():
+    try:
+        with open(MANIFEST) as fh:
+            return json.load(fh)
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def generated_paths():
+    """Every file a sync has generated, for protect_governor."""
+    return [p for t in _manifest().values() for p in t.get("agents", [])]
+
+
+def sync(dry_run=False, only=None):
+    registry = load_registry()
+    paths = discover()
+    if only:
+        paths = [p for p in paths if parse(p)["name"] in only]
+    manifest = _manifest()
+    for tname in ALL_TARGETS:
+        target = TARGETS[tname]
+        written = []
+        for path in paths:
+            profile = parse(path)
+            if tname not in (profile.get("agents") or ALL_TARGETS):
+                continue
+            servers, disallowed = resolve(profile, registry)
+            profile["disallowed"] = disallowed
+            src = os.path.relpath(path, ROOT)
+            dest = target.write(profile, servers, src, dry_run)
+            written.append(dest)
+            verb = "would write" if dry_run else "wrote"
+            print(f"  {target.label:12} {verb} {dest}  servers: {', '.join(servers)}"
+                  + (f"; {len(disallowed)} write tool(s) blocked" if disallowed else ""))
+        previous = (manifest.get(tname) or {}).get("agents", [])
+        if not only:
+            for stale in target.remove_stale(previous, written, dry_run):
+                print(f"  {target.label:12} {'would remove' if dry_run else 'removed'} stale {stale}")
+            kept = written
+        else:
+            kept = sorted(set(previous) | set(written))
+        owned = list(registry.get("servers") or {}) + list(registry.get("retire") or [])
+        removed = target.retire_everyday(owned, dry_run)
+        if removed:
+            print(f"  {target.label:12} {'would remove' if dry_run else 'removed'} from everyday config: {', '.join(removed)}")
+        manifest[tname] = {"agents": kept}
+    if not dry_run:
+        config.ensure_home()
+        _atomic_write(MANIFEST, json.dumps(manifest, indent=2))
+    return 0
+
+
+def list_profiles():
+    registry = load_registry()
+    print(f"registry: {os.path.relpath(REGISTRY, ROOT)} ({len(registry.get('servers') or {})} servers)")
+    for path in discover():
+        p = parse(path)
+        flags = " readonly" if p.get("readonly") else ""
+        local = " (local)" if path.endswith(".local.md") else ""
+        print(f"  {p['name']:24} {', '.join(p['servers'])}{flags}{local}")
+    return 0
+
+
+def run(name, extra):
+    """Replace this process with a Claude session that has only the profile's servers."""
+    registry = load_registry()
+    match = [p for p in (parse(x) for x in discover()) if p["name"] == name]
+    if not match:
+        print(f"no profile named {name}", file=sys.stderr)
+        return 2
+    profile = match[0]
+    servers, disallowed = resolve(profile, registry)
+    config.ensure_home()
+    mcp_file = os.path.join(RUN_DIR, name + ".mcp.json")
+    _atomic_write(mcp_file, json.dumps({"mcpServers": servers}, indent=2))
+    argv = ["claude", "--strict-mcp-config", "--mcp-config", mcp_file,
+            "--append-system-prompt", profile["body"].strip()]
+    if disallowed:
+        argv += ["--disallowedTools", ",".join(disallowed)]
+    if profile.get("model"):
+        argv += ["--model", profile["model"]]
+    os.execvp("claude", argv + extra)
+
+
+def main(argv):
+    cmd = argv[0] if argv else ""
+    rest = argv[1:]
+    if cmd == "list":
+        return list_profiles()
+    if cmd == "sync":
+        only = None
+        if "--only" in rest:
+            only = set(rest[rest.index("--only") + 1].split(","))
+        return sync(dry_run="--dry-run" in rest, only=only)
+    if cmd == "run" and rest:
+        return run(rest[0], rest[1:])
+    print("usage: profilesync {list | sync [--dry-run] [--only a,b] | run <profile> [claude args]}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

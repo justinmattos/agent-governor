@@ -5,11 +5,13 @@
 > like Graphite-preferred git) across **Claude Code, Codex, and Cursor** at once,
 > `skillsync` publishes one shared skill library to all three, and `instrsync` delivers
 > one set of standing instructions (your pronouns, house preferences) into each agent's
-> user-scope context. Rules, skills, and instructions are authored once and apply
-> everywhere — and each has a gitignored `.local` layer for what's personal to you.
+> user-scope context, and `profilesync` keeps MCP servers out of everyday sessions by
+> moving them into agent profiles. Rules, skills, instructions, and profiles are
+> authored once and apply everywhere — and each has a gitignored `.local` layer for
+> what's personal to you.
 
 This repo governs the AI coding agents running on a developer's machine from a single
-source of truth. It has three parts that share one repo and one CLI (`bin/govctl`):
+source of truth. It has four parts that share one repo and one CLI (`bin/govctl`):
 
 - **[`govd`](#govd--governing-actions) — governs _actions._** An always-on local daemon
   decides `allow` / `ask` / `deny` on what an agent is about to _do_ (run a shell
@@ -20,6 +22,9 @@ source of truth. It has three parts that share one repo and one CLI (`bin/govctl
 - **[`instrsync`](#instrsync--governing-instructions) — governs _instructions._** One
   set of standing instructions — the always-on context every agent should hold in every
   session, like your pronouns — is delivered into each agent's user-scope context.
+- **[`profilesync`](#profilesync--governing-mcp-servers) — governs _MCP servers._**
+  Servers live in named profiles instead of every session; each profile runs as a worker
+  your main session delegates to, or as a session of its own.
 
 ```
 ACTIONS — runtime governance ─────────────────────────────────────────────────
@@ -71,8 +76,10 @@ INSTRUCTIONS — standing context, authored once ──────────�
 | `instructions/*.md`                      | canonical standing instructions — one topic per file, delivered to every agent at user scope; `*.local.md` is gitignored for personal ones |
 | `instrsync/`                             | splices the instructions into `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md`; serves them to the Cursor adapter |
 | `examples/`                              | copy-ready templates: personal instructions, a skill, and a pointer to the rule template; inert where they sit |
-| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show |
+| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show / profiles-sync / profiles-list / profile |
 | `install/*.json`                         | canonical per-agent hook config, the source of truth; `{python}` / `{governor_root}` are resolved at sync time |
+| `profiles/`                              | agent profiles (`<name>.local.md`) and the MCP server registry (`servers.local.json`), both gitignored |
+| `profilesync/`                           | turns each profile into a Claude Code subagent and removes its servers from everyday config |
 | `hooksync/`                              | merges the hook config into each agent's live settings (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.cursor/hooks.json`) |
 
 State and logs live in `~/.govd/` (`port`, `govd.pid`, `audit.jsonl`, `govd.out.log`,
@@ -442,6 +449,71 @@ and says so if it doesn't. `bin/govctl test` also runs the adapter against a syn
 `sessionStart` and checks the injected text. To confirm the instructions reached a session,
 run `/context` in Claude Code and look for `~/.claude/CLAUDE.md` under **Memory files**, or
 simply ask the agent which pronouns to use for you.
+
+---
+
+# profilesync — governing MCP servers
+
+Every MCP server in an agent's everyday config loads into every session: its tool names
+cost context before you type anything, a stdio server starts a process per session, and
+every session can reach every database. `profilesync` moves servers into **profiles**
+— named bundles of servers, each with a brief — so a normal session starts with none of
+them and reaches one only when it needs it.
+
+One profile runs two ways:
+
+- **As a worker.** Each profile becomes a Claude Code subagent in `~/.claude/agents/`.
+  Its servers are defined inline, so they connect when the subagent starts and
+  disconnect when it finishes; the main session never loads them. The main session
+  delegates a question, the worker reads the raw results, and only its answer comes
+  back — which keeps large query results out of your conversation too.
+- **As a session.** `bin/govctl profile <name>` starts Claude with only that profile's
+  servers (`--strict-mcp-config`, which also leaves out claude.ai connectors) and the
+  profile's brief appended to the system prompt. Use it for work that is mostly MCP, where
+  many back-and-forth delegations would cost more than they save.
+
+## Authoring
+
+Server definitions live in `profiles/servers.local.json`, the registry, in `.mcp.json`
+form. Two extra keys are governor-only and never emitted: `write_tools`, the tools a
+`readonly: true` profile blocks, and `writable`. The registry holds connection strings
+and tokens, so it is gitignored. A profile is `profiles/<name>.local.md` (or a shared
+`<name>.md` with no credentials):
+
+```markdown
+---
+name: staging-investigator
+description: Read-only investigation of STAGING data. The main session reads this to decide when to delegate.
+servers: [mongodb-staging, internal-api-staging]
+readonly: true
+model: sonnet          # optional; omit to inherit
+tools: [Read, Grep]    # optional allowlist; omit to inherit the main session's tools
+---
+The worker's brief: what it's for, how narrowly to query, and what to report back.
+```
+
+Start from [`examples/profiles/`](examples/profiles/). For a database, prefer the
+server's own read-only mode where it has one (`MDB_MCP_READ_ONLY=true` for
+`mongodb-mcp-server`), with a read-only credential and `readonly: true` as further layers.
+
+## Syncing
+
+```bash
+bin/govctl profiles-list               # profiles, their servers, and the registry
+bin/govctl profiles-sync --dry-run     # what would be written and removed
+bin/govctl profiles-sync               # write the subagents; retire servers from everyday config
+bin/govctl profile staging-investigator  # a Claude session with only that profile's servers
+```
+
+A sync writes one subagent per profile (mode `0600`, since it carries the server
+definitions), removes subagents it generated for profiles that no longer exist, and
+never overwrites an agent file it didn't generate. It then removes every registry
+server — and every name in the registry's `retire` list — from `~/.claude.json`, leaving
+servers the registry doesn't know about alone. `profiles-sync` asks for approval like
+`hooks-sync`, and `protect_governor` treats each generated subagent as live governance.
+
+OAuth sign-ins are stored per server URL, so signing in once — in `/mcp` inside a
+`govctl profile` session — covers the subagent too. Codex support is not built yet.
 
 ## License
 

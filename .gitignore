@@ -13,3 +13,6 @@ instructions/*.local.md
 skills/*.local/
 # personal policy rules (auto-loaded at daemon startup)
 govd/policy/rules/*.local.py
+# personal agent profiles and the MCP server registry (holds credentials)
+profiles/*.local.md
+profiles/*.local.json
