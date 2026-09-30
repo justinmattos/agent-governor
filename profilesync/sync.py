@@ -3,7 +3,7 @@
 Usage (normally via `bin/govctl`):
     python -m profilesync.sync list
     python -m profilesync.sync sync [--dry-run] [--only name,name]
-    python -m profilesync.sync run <profile> [claude args...]
+    python -m profilesync.sync run <profile> [--agent claude_code|codex] [agent args...]
 
 A profile is `profiles/<name>.md` (shared) or `profiles/<name>.local.md` (personal,
 gitignored): `key: value` frontmatter plus a body that becomes the worker's brief.
@@ -24,6 +24,7 @@ Every registry server is profile-owned: a sync removes it, and anything under
 import json
 import os
 import re
+import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -125,10 +126,10 @@ def sync(dry_run=False, only=None):
             servers, disallowed = resolve(profile, registry)
             profile["disallowed"] = disallowed
             src = os.path.relpath(path, ROOT)
-            dest = target.write(profile, servers, src, dry_run)
-            written.append(dest)
+            dests = target.write(profile, servers, src, dry_run)
+            written.extend(dests)
             verb = "would write" if dry_run else "wrote"
-            print(f"  {target.label:12} {verb} {dest}  servers: {', '.join(servers)}"
+            print(f"  {target.label:12} {verb} {', '.join(dests)}  servers: {', '.join(servers)}"
                   + (f"; {len(disallowed)} write tool(s) blocked" if disallowed else ""))
         previous = (manifest.get(tname) or {}).get("agents", [])
         if not only:
@@ -159,8 +160,25 @@ def list_profiles():
     return 0
 
 
+def _codex_bin():
+    found = shutil.which("codex") or os.environ.get("CODEX_CLI_PATH")
+    return found or "/Applications/ChatGPT.app/Contents/Resources/codex"
+
+
 def run(name, extra):
-    """Replace this process with a Claude session that has only the profile's servers."""
+    """Replace this process with an agent session that has only the profile's servers.
+
+    Claude Code gets them through --strict-mcp-config. Codex layers the synced
+    `<name>.config.toml` profile over its base config, so its remaining everyday
+    servers stay loaded alongside.
+    """
+    agent = "claude_code"
+    if "--agent" in extra:
+        i = extra.index("--agent")
+        agent, extra = extra[i + 1], extra[:i] + extra[i + 2:]
+    if agent == "codex":
+        codex = _codex_bin()
+        os.execv(codex, [codex, "-p", name] + extra)
     registry = load_registry()
     match = [p for p in (parse(x) for x in discover()) if p["name"] == name]
     if not match:
@@ -192,7 +210,7 @@ def main(argv):
         return sync(dry_run="--dry-run" in rest, only=only)
     if cmd == "run" and rest:
         return run(rest[0], rest[1:])
-    print("usage: profilesync {list | sync [--dry-run] [--only a,b] | run <profile> [claude args]}", file=sys.stderr)
+    print("usage: profilesync {list | sync [--dry-run] [--only a,b] | run <profile> [--agent claude_code|codex] [args]}", file=sys.stderr)
     return 2
 
 

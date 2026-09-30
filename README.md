@@ -79,7 +79,7 @@ INSTRUCTIONS — standing context, authored once ──────────�
 | `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show / profiles-sync / profiles-list / profile |
 | `install/*.json`                         | canonical per-agent hook config, the source of truth; `{python}` / `{governor_root}` are resolved at sync time |
 | `profiles/`                              | agent profiles (`<name>.local.md`) and the MCP server registry (`servers.local.json`), both gitignored |
-| `profilesync/`                           | turns each profile into a Claude Code subagent and removes its servers from everyday config |
+| `profilesync/`                           | turns each profile into a Claude Code subagent and a Codex session profile, and removes its servers from everyday config |
 | `hooksync/`                              | merges the hook config into each agent's live settings (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.cursor/hooks.json`) |
 
 State and logs live in `~/.govd/` (`port`, `govd.pid`, `audit.jsonl`, `govd.out.log`,
@@ -462,15 +462,23 @@ them and reaches one only when it needs it.
 
 One profile runs two ways:
 
-- **As a worker.** Each profile becomes a Claude Code subagent in `~/.claude/agents/`.
+- **As a worker (Claude Code).** Each profile becomes a Claude Code subagent in `~/.claude/agents/`.
   Its servers are defined inline, so they connect when the subagent starts and
   disconnect when it finishes; the main session never loads them. The main session
   delegates a question, the worker reads the raw results, and only its answer comes
   back — which keeps large query results out of your conversation too.
-- **As a session.** `bin/govctl profile <name>` starts Claude with only that profile's
-  servers (`--strict-mcp-config`, which also leaves out claude.ai connectors) and the
-  profile's brief appended to the system prompt. Use it for work that is mostly MCP, where
-  many back-and-forth delegations would cost more than they save.
+- **As a session (Claude Code and Codex).** `bin/govctl profile <name>` starts Claude
+  with only that profile's servers (`--strict-mcp-config`, which also leaves out
+  claude.ai connectors) and the profile's brief appended to the system prompt.
+  `bin/govctl profile <name> --agent codex` runs `codex -p <name>`, layering the synced
+  `~/.codex/<name>.config.toml` (the profile's servers and brief) over your base config.
+  Use a session for work that is mostly MCP, where many back-and-forth delegations
+  would cost more than they save.
+
+Codex has no worker mode yet: Codex 0.155 starts a custom agent without the
+`mcp_servers` its file declares, so `profilesync` writes only the session profile there.
+Codex also defers MCP tools behind a tool search, so each Codex brief starts with a line
+telling the model to search before it concludes a tool is missing.
 
 ## Authoring
 
@@ -513,7 +521,12 @@ servers the registry doesn't know about alone. `profiles-sync` asks for approval
 `hooks-sync`, and `protect_governor` treats each generated subagent as live governance.
 
 OAuth sign-ins are stored per server URL, so signing in once — in `/mcp` inside a
-`govctl profile` session — covers the subagent too. Codex support is not built yet.
+`govctl profile` session — covers the subagent too. OAuth sign-in for a server that
+exists only in a Codex profile is untested; `codex mcp login` reads the base config only.
+
+For Codex the sync writes `~/.codex/<name>.config.toml` per profile and removes the same
+servers' `[mcp_servers.*]` tables (and their sub-tables) from `~/.codex/config.toml`,
+leaving every other line of that file untouched.
 
 ## License
 
