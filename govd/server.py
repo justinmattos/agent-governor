@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from govd import audit, config
+from govd.reaper import Reaper
 from govd.policy.engine import ALLOW, Ctx, Decision, Engine, Event
 from govd.policy.rules import default_rules
 from govd.state import LockTable, SessionPlans
@@ -15,6 +16,7 @@ STARTED_AT = time.time()
 LOCKS = LockTable()
 PLANS = SessionPlans()
 ENGINE = Engine(default_rules())
+REAPER = Reaper()
 
 
 def _event_from(payload):
@@ -66,6 +68,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pid": os.getpid(),
                 "uptime_seconds": round(time.time() - STARTED_AT, 1),
                 "rules": [r.name for r in ENGINE.rules],
+                "reaper": REAPER.stats(),
             })
         elif self.path == "/v1/locks":
             self._send(200, {"held": LOCKS.snapshot()})
@@ -128,6 +131,7 @@ def main():
     port = config.DEFAULT_PORT
     server = ThreadingHTTPServer((config.HOST, port), Handler)
     _write_runtime(port)
+    REAPER.start()
     sys.stderr.write(f"govd {config.VERSION} listening on {config.HOST}:{port}\n")
     sys.stderr.flush()
     try:

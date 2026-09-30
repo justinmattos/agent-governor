@@ -11,6 +11,13 @@ ADAPTER_ERROR_LOG = os.path.join(GOVD_HOME, "adapter-errors.log")
 
 VERSION = "0.1.0"
 
+# Orphaned MCP server processes (see govd/reaper.py). A comma-separated list of
+# substrings matched against the full command line; empty disables the reaper, as
+# does an interval of 0.
+REAP_PATTERNS = [p.strip() for p in os.environ.get("GOVD_REAP_PATTERNS", "mongodb-mcp-server").split(",") if p.strip()]
+REAP_INTERVAL_SECONDS = int(os.environ.get("GOVD_REAP_INTERVAL", "300"))
+REAP_GRACE_SECONDS = int(os.environ.get("GOVD_REAP_GRACE", "120"))
+
 
 def ensure_home():
     os.makedirs(GOVD_HOME, mode=0o700, exist_ok=True)

@@ -97,6 +97,13 @@ def status(_):
     else:
         print(f"govd: running  pid={h['pid']} port={_port()} uptime={h['uptime_seconds']}s v{h['version']}")
         print("rules:", ", ".join(h["rules"]))
+        r = h.get("reaper") or {}
+        if r.get("enabled"):
+            last = time.strftime("%H:%M:%S", time.localtime(r["last_run"])) if r.get("last_run") else "not yet"
+            print(f"reaper: every {r['interval_seconds']}s for {', '.join(r['patterns'])}; "
+                  f"last scan {last}; reaped {r['groups_reaped']} orphan group(s), {r['rss_reaped_mb']} MB since start")
+        else:
+            print("reaper: disabled")
     print("launchagent:", "installed" if os.path.exists(PLIST) else "not installed")
     print("audit log:", AUDIT_FILE)
     return 0
@@ -122,7 +129,7 @@ def tail(args):
             e = json.loads(line)
         except Exception:
             continue
-        mark = {"deny": "DENY", "block": "BLOCK", "ask": "ASK "}.get(e.get("decision"), "ok  ")
+        mark = {"deny": "DENY", "block": "BLOCK", "ask": "ASK ", "reap": "REAP"}.get(e.get("decision"), "ok  ")
         print(_clean(f"{e.get('ts', '')[11:19]} {mark} {e.get('agent', ''):11} {e.get('event', ''):16} {e.get('target', '')[:70]}"))
     return 0
 
@@ -165,6 +172,90 @@ SAMPLES = [
     ("edit skill ok", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
                        "input": {"file_path": os.path.join(ROOT, "skills", "triage-merge-conflicts", "SKILL.md"), "old_string": "a", "new_string": "b"}}, "allow"),
 ]
+
+
+def reap(args):
+    from govd import config
+    from govd.reaper import reap as _reap
+    dry = "--dry-run" in args
+    config.ensure_home()
+    groups = _reap(dry_run=dry)
+    verb = "would stop" if dry else "stopped"
+    for g in groups:
+        rss = sum(p.rss for p in g) / 1024
+        print(_clean(f"  {verb} pid {g[0].pid} (+{len(g) - 1} child), {rss:.0f} MB, "
+                     f"up {g[0].age // 3600}h: {g[0].command[:80]}"))
+    total = sum(p.rss for g in groups for p in g) / 1024
+    print(f"{len(groups)} orphan group(s) {verb}, {total:.0f} MB; patterns: {', '.join(config.REAP_PATTERNS) or '(none)'}")
+    return 0
+
+
+def _startup_tokens(extra):
+    proc = subprocess.run(
+        ["claude", "-p", "Reply with just OK.", "--output-format", "json"] + extra,
+        capture_output=True, text=True, timeout=300,
+    )
+    u = json.loads(proc.stdout).get("usage", {})
+    return u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+
+
+def mcp_cost(args):
+    """Startup prompt tokens per user-scope MCP server, measured with headless Claude runs.
+
+    Each server is run alone under --strict-mcp-config and compared with a run that has
+    none. What remains of the everything-connected run is claude.ai connectors and
+    plugin servers, which can't be connected one at a time.
+    """
+    from govd import config
+    with open(os.path.expanduser("~/.claude.json")) as fh:
+        servers = json.load(fh).get("mcpServers") or {}
+    names = args or sorted(servers)
+    unknown = [n for n in names if n not in servers]
+    if unknown:
+        print("not a user-scope server in ~/.claude.json:", ", ".join(unknown), file=sys.stderr)
+        return 2
+    config.ensure_home()
+    tmp = os.path.join(config.GOVD_HOME, f"mcp-cost-{os.getpid()}.json")
+
+    def strict(mcp):
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            json.dump({"mcpServers": mcp}, fh)
+        return _startup_tokens(["--strict-mcp-config", "--mcp-config", tmp])
+
+    try:
+        full = _startup_tokens([])
+        base = strict({})
+        print(f"{'everything connected':32} {full:>7}")
+        print(f"{'no MCP servers':32} {base:>7}")
+        total = 0
+        for n in names:
+            delta = strict({n: servers[n]}) - base
+            total += delta
+            print(f"{'  + ' + n:32} {delta:>+7}")
+        if not args:
+            print(f"{'  + connectors and plugins':32} {full - base - total:>+7}")
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return 0
+
+
+def _reaper_selftest():
+    """Orphan a marked sleeper and keep a parented one; only the orphan may be reaped."""
+    from govd.reaper import reap as _reap
+    marker = f"govd-reap-selftest-{os.getpid()}"
+    sleeper = [sys.executable, "-c", "import time; time.sleep(60)", marker]
+    parented = subprocess.Popen(sleeper)
+    subprocess.run(["sh", "-c", " ".join(f"'{a}'" for a in sleeper) + " >/dev/null 2>&1 &"])
+    time.sleep(0.5)
+    try:
+        reaped = {p.pid for g in _reap(patterns=[marker], grace=0) for p in g}
+        left = subprocess.run(["pgrep", "-f", marker], capture_output=True, text=True).stdout.split()
+        return bool(reaped) and left == [str(parented.pid)] and parented.poll() is None
+    finally:
+        parented.kill()
+        parented.wait()
 
 
 def selftest(_):
@@ -261,6 +352,9 @@ def selftest(_):
         urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_port()}/v1/evaluate",
                                                       data=json.dumps({"event": "session_end", "session_id": sid}).encode(),
                                                       headers={"Content-Type": "application/json"}), timeout=2)
+    reaped_ok = _reaper_selftest()
+    ok = ok and reaped_ok
+    print(f"  {'PASS' if reaped_ok else 'FAIL'}  reaper stops an orphaned MCP-like process and spares a parented one")
     os.unlink(disabled.name)
     shutil.rmtree(plan_root, ignore_errors=True)
     return 0 if ok else 1
@@ -351,7 +445,7 @@ def hooks_list(args):
 
 COMMANDS = {
     "start": start, "stop": stop, "restart": restart, "status": status,
-    "tail": tail, "test": selftest, "install-agent": install_agent,
+    "tail": tail, "reap": reap, "mcp-cost": mcp_cost, "test": selftest, "install-agent": install_agent,
     "uninstall-agent": uninstall_agent,
     "hooks-sync": hooks_sync, "hooks-list": hooks_list,
     "skills-sync": skills_sync, "skills-list": skills_list,

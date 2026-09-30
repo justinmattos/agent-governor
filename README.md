@@ -63,6 +63,7 @@ INSTRUCTIONS — standing context, authored once ──────────�
 | `govd/policy/engine.py`                  | rule runner; most-restrictive decision wins                                                              |
 | `govd/policy/rules/`                     | one file per rule; `*.local.py` is gitignored and auto-loaded for personal rules                         |
 | `govd/state.py`                          | shared lock table                                                                                        |
+| `govd/reaper.py`                         | stops MCP server processes left behind by ended agent sessions                                           |
 | `govd/audit.py`                          | JSONL audit log                                                                                          |
 | `adapters/{claude_code,codex,cursor}.py` | per-agent stdin→daemon→stdout translators                                                                |
 | `skills/<name>/`                         | canonical skill library — one `SKILL.md` per skill; `<name>.local/` is gitignored for personal skills    |
@@ -70,7 +71,7 @@ INSTRUCTIONS — standing context, authored once ──────────�
 | `instructions/*.md`                      | canonical standing instructions — one topic per file, delivered to every agent at user scope; `*.local.md` is gitignored for personal ones |
 | `instrsync/`                             | splices the instructions into `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md`; serves them to the Cursor adapter |
 | `examples/`                              | copy-ready templates: personal instructions, a skill, and a pointer to the rule template; inert where they sit |
-| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show |
+| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show |
 | `install/*.json`                         | canonical per-agent hook config, the source of truth; `{python}` / `{governor_root}` are resolved at sync time |
 | `hooksync/`                              | merges the hook config into each agent's live settings (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.cursor/hooks.json`) |
 
@@ -209,12 +210,31 @@ prompts you (`protect_governor`); approve it or run it from your own terminal.
 ## Operating the daemon
 
 ```bash
-bin/govctl status       # running? which rules?
-bin/govctl tail 40      # last 40 governed actions
+bin/govctl status       # running? which rules? reaper totals
+bin/govctl tail 40      # last 40 governed actions (and reaped processes)
+bin/govctl reap --dry-run  # list orphaned MCP servers without stopping them
+bin/govctl mcp-cost     # startup tokens each MCP server adds (headless Claude runs)
 bin/govctl test         # sample evaluations, PASS/FAIL
 bin/govctl restart
 bin/govctl uninstall-agent
 ```
+
+### Orphaned MCP servers
+
+An agent starts its stdio MCP servers as child processes, and a session that ends
+without shutting them down leaves them running, adopted by launchd. Enough of them
+fill memory and swap. Every 5 minutes the daemon stops any process that matches a
+configured pattern, has launchd (pid 1) as its parent, and is older than 2 minutes,
+together with its child processes. A live session's servers always have that session
+as their parent, so they are never touched. Each stop is written to the audit log
+(`REAP` in `govctl tail`); `govctl status` shows the totals and `govctl reap` runs a
+scan on demand.
+
+| Variable             | Default              | Meaning                                                        |
+| -------------------- | -------------------- | -------------------------------------------------------------- |
+| `GOVD_REAP_PATTERNS` | `mongodb-mcp-server` | comma-separated substrings matched against the command line; empty disables |
+| `GOVD_REAP_INTERVAL` | `300`                | seconds between scans; `0` disables                            |
+| `GOVD_REAP_GRACE`    | `120`                | minimum process age, in seconds, before it can be reaped       |
 
 ## Fail-open by design — never silent, never loosening
 

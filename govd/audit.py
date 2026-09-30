@@ -52,6 +52,24 @@ def record(event, decision):
         "reason": redact(decision.reason),
         "rules": decision.rule,
     }
+    _append(line)
+
+
+def record_reap(group):
+    root = group[0]
+    _append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "agent": "govd",
+        "event": "reap",
+        "target": redact(root.command[:400]),
+        "decision": "reap",
+        "pids": [p.pid for p in group],
+        "age_seconds": root.age,
+        "rss_mb": round(sum(p.rss for p in group) / 1024, 1),
+    })
+
+
+def _append(line):
     with _lock:
         fd = os.open(config.AUDIT_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
