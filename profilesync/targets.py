@@ -112,6 +112,18 @@ class ClaudeCode(Target):
     def write(self, profile, servers, src, dry_run):
         return [self._guarded_write(self.agent_path(profile), self.render(profile, servers, src), dry_run)]
 
+    def add_everyday(self, servers, dry_run):
+        """Write registry servers marked `everyday` into the user-scope config. Returns names changed."""
+        with open(self.config_file) as fh:
+            data = json.load(fh)
+        everyday = data.setdefault("mcpServers", {})
+        changed = sorted(n for n, d in servers.items() if everyday.get(n) != _claude_def(n, d))
+        if changed and not dry_run:
+            for n in changed:
+                everyday[n] = _claude_def(n, servers[n])
+            _atomic_write(self.config_file, json.dumps(data, indent=2), os.stat(self.config_file).st_mode & 0o777)
+        return changed
+
     def retire_everyday(self, names, dry_run):
         """Drop these servers from the user-scope config. Returns the names removed."""
         try:
@@ -195,6 +207,27 @@ class Codex(Target):
         # emit that file again via render(session=False) once Codex honors them.
         session = os.path.join(self.home, profile["name"] + ".config.toml")
         return [self._guarded_write(session, self.render(profile, servers, src, session=True), dry_run)]
+
+    def add_everyday(self, servers, dry_run):
+        """Append (or replace) the [mcp_servers.*] tables of registry servers marked `everyday`."""
+        for name, d in servers.items():
+            if d.get("url") and _split_headers(d)[1]:
+                raise ValueError(f"{name}: an everyday Codex server can't take keychain headers; "
+                                 "Codex reads them from env, which only `govctl profile` sets")
+        try:
+            with open(self.config_file) as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            text = ""
+        changed = [n for n in sorted(servers) if self._servers({}, {n: servers[n]}) not in text]
+        if changed and not dry_run:
+            self.retire_everyday(changed, dry_run)
+            with open(self.config_file) as fh:
+                text = fh.read()
+            tables = "\n\n".join(self._servers({}, {n: servers[n]}) for n in changed)
+            _atomic_write(self.config_file, text.rstrip("\n") + "\n\n" + tables + "\n",
+                          os.stat(self.config_file).st_mode & 0o777)
+        return changed
 
     def retire_everyday(self, names, dry_run):
         """Drop these servers' tables (and their sub-tables) from config.toml."""

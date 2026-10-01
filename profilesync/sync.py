@@ -18,8 +18,9 @@ Server definitions live in `profiles/servers.local.json` (gitignored — it hold
 credentials), in the same schema as a `.mcp.json` entry plus two governor keys that
 are never emitted: `write_tools` (tool names `readonly` blocks) and `writable`.
 Its top-level `retire` list names older everyday entries the registry replaces.
-Every registry server is profile-owned: a sync removes it, and anything under
-`retire`, from each agent's everyday config.
+A registry server is profile-owned unless it sets `"everyday": true`: a sync removes
+profile-owned servers, and anything under `retire`, from each agent's everyday config,
+and writes `everyday` servers into it.
 """
 import json
 import os
@@ -38,7 +39,7 @@ PROFILES_DIR = os.path.join(ROOT, "profiles")
 REGISTRY = os.path.join(PROFILES_DIR, "servers.local.json")
 MANIFEST = os.path.join(config.GOVD_HOME, "profilesync.json")
 RUN_DIR = os.path.join(config.GOVD_HOME, "profiles")
-GOVERNOR_KEYS = {"write_tools", "writable"}
+GOVERNOR_KEYS = {"write_tools", "writable", "everyday"}
 
 _FM_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
 _KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):\s?(.*)$")
@@ -139,10 +140,15 @@ def sync(dry_run=False, only=None):
             kept = written
         else:
             kept = sorted(set(previous) | set(written))
-        owned = list(registry.get("servers") or {}) + list(registry.get("retire") or [])
+        defs = registry.get("servers") or {}
+        everyday = {n: {k: v for k, v in d.items() if k not in GOVERNOR_KEYS} for n, d in defs.items() if d.get("everyday")}
+        owned = [n for n in defs if n not in everyday] + list(registry.get("retire") or [])
         removed = target.retire_everyday(owned, dry_run)
         if removed:
             print(f"  {target.label:12} {'would remove' if dry_run else 'removed'} from everyday config: {', '.join(removed)}")
+        added = target.add_everyday(everyday, dry_run)
+        if added:
+            print(f"  {target.label:12} {'would write' if dry_run else 'wrote'} to everyday config: {', '.join(added)}")
         manifest[tname] = {"agents": kept}
     if not dry_run:
         config.ensure_home()
@@ -152,7 +158,10 @@ def sync(dry_run=False, only=None):
 
 def list_profiles():
     registry = load_registry()
-    print(f"registry: {os.path.relpath(REGISTRY, ROOT)} ({len(registry.get('servers') or {})} servers)")
+    defs = registry.get("servers") or {}
+    everyday = sorted(n for n, d in defs.items() if d.get("everyday"))
+    print(f"registry: {os.path.relpath(REGISTRY, ROOT)} ({len(defs)} servers)"
+          + (f"; everyday: {', '.join(everyday)}" if everyday else ""))
     for path in discover():
         p = parse(path)
         flags = " readonly" if p.get("readonly") else ""

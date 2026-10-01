@@ -507,6 +507,19 @@ tools: [Read, Grep]    # optional allowlist; omit to inherit the main session's 
 The worker's brief: what it's for, how narrowly to query, and what to report back.
 ```
 
+A server that every session should have — an issue tracker you use mid-task, say —
+sets `"everyday": true` in the registry instead of belonging to a profile. A sync writes
+it into each agent's everyday config (`~/.claude.json`, `~/.codex/config.toml`), so it
+is still authored once. Codex reads header values from environment variables, which
+only `govctl profile` sets, so an everyday server can't use keychain headers there.
+
+**claude.ai connectors** load into every Claude Code session too, and they can't be
+scoped by any local file. To leave them on in claude.ai chat but out of Claude Code, set
+`ENABLE_CLAUDEAI_MCP_SERVERS=false` in the `env` block of `~/.claude/settings.json`,
+then add back the ones you use as registry servers pointing at the vendor's hosted MCP
+URL (`claude mcp list` shows each connector's URL). OAuth sign-ins are per URL, so
+each needs one sign-in in Claude Code.
+
 Start from [`examples/profiles/`](examples/profiles/). For a database, prefer the
 server's own read-only mode where it has one (`MDB_MCP_READ_ONLY=true` for
 `mongodb-mcp-server`), with a read-only credential and `readonly: true` as further layers.
