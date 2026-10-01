@@ -76,7 +76,7 @@ INSTRUCTIONS — standing context, authored once ──────────�
 | `instructions/*.md`                      | canonical standing instructions — one topic per file, delivered to every agent at user scope; `*.local.md` is gitignored for personal ones |
 | `instrsync/`                             | splices the instructions into `~/.claude/CLAUDE.md` / `~/.codex/AGENTS.md`; serves them to the Cursor adapter |
 | `examples/`                              | copy-ready templates: personal instructions, a skill, and a pointer to the rule template; inert where they sit |
-| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show / profiles-sync / profiles-list / profile |
+| `bin/govctl`                             | one CLI for all three: start / stop / status / tail / reap / mcp-cost / test / install-agent / hooks-sync / hooks-list / skills-sync / skills-list / instructions-sync / instructions-list / instructions-show / profiles-sync / profiles-list / profile / secrets-import / mcp-launch / mcp-headers |
 | `install/*.json`                         | canonical per-agent hook config, the source of truth; `{python}` / `{governor_root}` are resolved at sync time |
 | `profiles/`                              | agent profiles (`<name>.local.md`) and the MCP server registry (`servers.local.json`), both gitignored |
 | `profilesync/`                           | turns each profile into a Claude Code subagent and a Codex session profile, and removes its servers from everyday config |
@@ -123,6 +123,7 @@ see [Personal rules](#personal-rules).
 | `typecheck_lock`        | shell `tsc`/`tsgo`    | denies a second concurrent type-check anywhere on the machine (holds a daemon lock + checks the process table)                                                                                                                                       |
 | `no_narrative_comments` | edits to `.ts`/`.tsx` | surfaces newly-added narrative comments and demands the deletion test                                                                                                                                                                                |
 | `dangerous_bash`        | shell commands        | denies catastrophic commands: a recursive `rm`, `chmod`/`chown`, or `find -delete` aimed at `/`, `~`, or a system dir in any spelling (`-rf`, `-fr`, `-r -f`, `--recursive`, `/*`, `"$HOME"`, via `sudo`/`sh -c`/`eval`/`ssh`), fork bombs, `mkfs`/`wipefs`/`diskutil erase`, and raw block-device writes. Regex-proof indirection (`base64 \| sh`, `python -c`) is out of scope — that is what the agent's own permission prompt is for                                                                                                                                         |
+| `secret_reads`          | shell commands        | asks before an agent's shell prints a keychain password (`security find-*-password -w`/`-g`), dumps or exports the keychain, runs `govctl mcp-headers`, or touches a `*.bak-govd-*` config backup — the MCP credentials [`profilesync`](#credentials-in-the-keychain) keeps out of files. Pattern-matched, so `python -c` indirection gets past it |
 | `protect_governor`      | shell, file edits, Claude Code settings changes | asks a human before any action that would modify or disable the governor itself — this repo's `adapters/`, `govd/`, `bin/`, `install/`, `~/.govd`, each agent's hook config, the LaunchAgent, `govctl stop`/`restart`, killing the daemon, `disableAllHooks` — and blocks a live Claude Code settings change that drops the govd hook or sets `disableAllHooks`. Reads (`cat`, `grep`, `git log`, `govctl status`/`tail`/`test`) pass untouched. A session working **inside this repo** (cwd under the repo root) edits its own source (`adapters/`, `govd/`, `bin/`, `install/`) without a prompt — the trusted case governor development happens in; the live targets (`~/.govd`, each agent's hook config, the LaunchAgent) and the control actions (`govctl stop`/`restart`, killing the daemon, `disableAllHooks`) still ask, so an in-repo session can't silently disable the running governor either |
 
 ## Personal rules
@@ -503,6 +504,35 @@ The worker's brief: what it's for, how narrowly to query, and what to report bac
 Start from [`examples/profiles/`](examples/profiles/). For a database, prefer the
 server's own read-only mode where it has one (`MDB_MCP_READ_ONLY=true` for
 `mongodb-mcp-server`), with a read-only credential and `readonly: true` as further layers.
+
+## Credentials in the keychain
+
+A registry value can be a reference, `{"keychain": "<account>"}`, in place of the
+secret. The secret is a generic password in your login keychain under the service
+`governor-mcp`, and no generated file ever contains it:
+
+- a stdio server whose `env` holds a reference is emitted as `govctl mcp-launch <server>`,
+  which reads the secret, sets it in the environment, and replaces itself with the real
+  server;
+- an HTTP server whose `headers` hold a reference gets a Claude Code `headersHelper`
+  (`govctl mcp-headers <server>`), and in Codex an `env_http_headers` variable that
+  `govctl profile <name> --agent codex` fills in when it starts the session.
+
+Write secrets inline while authoring, then move them:
+
+```bash
+bin/govctl secrets-import --dry-run   # which values would move
+bin/govctl secrets-import             # store each in the keychain; the registry keeps references
+bin/govctl profiles-sync
+```
+
+It moves every header value and every `env` value whose name looks like a credential
+(`*STRING*`, `*TOKEN*`, `*KEY*`, `*SECRET*`, `*PASSW*`, `*AUTH*`, `*URI*`), writing
+through `security -i` on stdin so no secret appears on a command line. The keychain is
+not a wall against an agent determined to read it — any process running as you can call
+`security` — so the shared `secret_reads` rule asks before an agent's shell prints a
+keychain password, dumps the keychain, runs `govctl mcp-headers`, or touches a
+`*.bak-govd-*` config backup.
 
 ## Syncing
 

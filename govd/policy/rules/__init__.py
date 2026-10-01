@@ -18,10 +18,11 @@ from .no_narrative_comments import NoNarrativeComments
 from .typecheck_lock import TypecheckLock
 from .dangerous_bash import DangerousBash
 from .protect_governor import ProtectGovernor
+from .secret_reads import SecretReads
 
 # Shared, committed rules. protect_governor stays first; the engine takes the most
 # restrictive decision regardless of order, so order is for readability only.
-SHARED_RULES = [ProtectGovernor, TypecheckLock, DangerousBash, NoNarrativeComments]
+SHARED_RULES = [ProtectGovernor, TypecheckLock, DangerousBash, SecretReads, NoNarrativeComments]
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _LOCAL_SUFFIX = ".local.py"

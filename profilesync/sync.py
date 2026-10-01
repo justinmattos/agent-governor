@@ -30,7 +30,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from govd import config
-from profilesync.targets import ALL_TARGETS, TARGETS, _atomic_write
+from profilesync import secrets
+from profilesync.targets import ALL_TARGETS, TARGETS, _atomic_write, _claude_def
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROFILES_DIR = os.path.join(ROOT, "profiles")
@@ -178,7 +179,13 @@ def run(name, extra):
         agent, extra = extra[i + 1], extra[:i] + extra[i + 2:]
     if agent == "codex":
         codex = _codex_bin()
-        os.execv(codex, [codex, "-p", name] + extra)
+        env = dict(os.environ)
+        for server in profile_servers(name):
+            d = load_registry()["servers"][server]
+            for header, value in (d.get("headers") or {}).items():
+                if secrets.is_ref(value):
+                    env[secrets.env_name(server, header)] = secrets.get(value["keychain"])
+        os.execve(codex, [codex, "-p", name] + extra, env)
     registry = load_registry()
     match = [p for p in (parse(x) for x in discover()) if p["name"] == name]
     if not match:
@@ -188,7 +195,7 @@ def run(name, extra):
     servers, disallowed = resolve(profile, registry)
     config.ensure_home()
     mcp_file = os.path.join(RUN_DIR, name + ".mcp.json")
-    _atomic_write(mcp_file, json.dumps({"mcpServers": servers}, indent=2))
+    _atomic_write(mcp_file, json.dumps({"mcpServers": {n: _claude_def(n, d) for n, d in servers.items()}}, indent=2))
     argv = ["claude", "--strict-mcp-config", "--mcp-config", mcp_file,
             "--append-system-prompt", profile["body"].strip()]
     if disallowed:
@@ -196,6 +203,41 @@ def run(name, extra):
     if profile.get("model"):
         argv += ["--model", profile["model"]]
     os.execvp("claude", argv + extra)
+
+
+def profile_servers(name):
+    match = [p for p in (parse(x) for x in discover()) if p["name"] == name]
+    if not match:
+        raise SystemExit(f"no profile named {name}")
+    return match[0]["servers"]
+
+
+def launch(server):
+    """Replace this process with a stdio server, its keychain references resolved into env."""
+    d = (load_registry().get("servers") or {})[server]
+    env = dict(os.environ)
+    env.update(secrets.resolve(d.get("env")))
+    os.execve(d["command"], [d["command"]] + list(d.get("args") or []), env)
+
+
+def headers(server):
+    """Print one HTTP server's headers as JSON, for Claude Code's headersHelper."""
+    d = (load_registry().get("servers") or {})[server]
+    print(json.dumps(secrets.resolve(d.get("headers"))))
+    return 0
+
+
+def import_secrets(dry_run=False):
+    registry = load_registry()
+    moved = secrets.import_inline(registry, dry_run=dry_run)
+    for server, field, account in moved:
+        print(f"  {'would move' if dry_run else 'moved'} {server} {field} -> keychain {secrets.SERVICE}/{account}")
+    if moved and not dry_run:
+        _atomic_write(REGISTRY, json.dumps(registry, indent=2))
+        print(f"{len(moved)} secret(s) moved; {os.path.relpath(REGISTRY, ROOT)} now holds references only. Run `govctl profiles-sync`.")
+    elif not moved:
+        print("no inline secrets left in the registry")
+    return 0
 
 
 def main(argv):
@@ -210,6 +252,12 @@ def main(argv):
         return sync(dry_run="--dry-run" in rest, only=only)
     if cmd == "run" and rest:
         return run(rest[0], rest[1:])
+    if cmd == "launch" and rest:
+        return launch(rest[0])
+    if cmd == "headers" and rest:
+        return headers(rest[0])
+    if cmd == "import-secrets":
+        return import_secrets(dry_run="--dry-run" in rest)
     print("usage: profilesync {list | sync [--dry-run] [--only a,b] | run <profile> [--agent claude_code|codex] [args]}", file=sys.stderr)
     return 2
 

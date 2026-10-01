@@ -54,13 +54,15 @@ key to restrict *which* agents get it, `agents/<agent>.md` for per-agent mechani
 cp examples/profiles/servers.local.json profiles/servers.local.json
 cp examples/profiles/investigator.local.md profiles/staging-investigator.local.md
 $EDITOR profiles/servers.local.json profiles/*.local.md
+bin/govctl secrets-import            # move the credentials into the login keychain
 bin/govctl profiles-sync --dry-run   # see what it will write and remove
 bin/govctl profiles-sync
 ```
 
 `servers.local.json` is the registry: every MCP server a profile can use, in `.mcp.json`
 form, plus `write_tools` (blocked when a profile says `readonly: true`). It holds
-connection strings and tokens, so it only ever exists as a gitignored `.local.json`.
+connection strings and tokens until `secrets-import` swaps them for keychain
+references, so it only ever exists as a gitignored `.local.json`.
 `retire` names older everyday entries the registry replaces; a sync removes those and
 every registry server from your everyday config. Each `*.local.md` profile becomes a
 Claude Code subagent (`~/.claude/agents/<name>.md`) and can be started as its own

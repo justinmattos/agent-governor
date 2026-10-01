@@ -162,6 +162,13 @@ SAMPLES = [
     ("govctl profiles-sync -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl profiles-sync"}}, "ask"),
     ("edit server registry -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "file_edit",
                                      "input": {"file_path": os.path.join(ROOT, "profiles", "servers.local.json"), "old_string": "a", "new_string": "b"}}, "ask"),
+    ("security find-generic-password -w -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell",
+                                                  "input": {"command": "security find-generic-password -s governor-mcp -a x -w"}}, "ask"),
+    ("security dump-keychain -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "security dump-keychain -d"}}, "ask"),
+    ("govctl mcp-headers -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl mcp-headers langfuse-rex"}}, "ask"),
+    ("cat config backup -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "cat ~/.claude.json.bak-govd-20260930-172806"}}, "ask"),
+    ("security find-generic-password metadata ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell",
+                                                    "input": {"command": "security find-generic-password -s governor-mcp -a x"}}, "allow"),
     ("govctl status ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl status"}}, "allow"),
     ("repoint port file -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "echo 1 > ~/.govd/port"}}, "ask"),
     ("read audit log ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "tail -n 5 ~/.govd/audit.jsonl"}}, "allow"),
@@ -451,6 +458,21 @@ def profile(args):
     return _profiles_main(["run"] + args)
 
 
+def mcp_launch(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["launch"] + args)
+
+
+def mcp_headers(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["headers"] + args)
+
+
+def secrets_import(args):
+    from profilesync.sync import main as _profiles_main
+    return _profiles_main(["import-secrets"] + args)
+
+
 def hooks_sync(args):
     from hooksync.sync import main as _hooks_main
     return _hooks_main(["sync"] + args)
@@ -470,6 +492,7 @@ COMMANDS = {
     "instructions-sync": instructions_sync, "instructions-list": instructions_list,
     "instructions-show": instructions_show,
     "profiles-sync": profiles_sync, "profiles-list": profiles_list, "profile": profile,
+    "secrets-import": secrets_import, "mcp-launch": mcp_launch, "mcp-headers": mcp_headers,
 }
 
 
