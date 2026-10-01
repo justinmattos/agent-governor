@@ -16,3 +16,5 @@ govd/policy/rules/*.local.py
 # personal agent profiles and the MCP server registry (holds credentials)
 profiles/*.local.md
 profiles/*.local.json
+# personal daemon settings (e.g. opting in to the MCP orphan reaper)
+govd/config.local.json

@@ -9,10 +9,10 @@ A profile is `profiles/<name>.md` (shared) or `profiles/<name>.local.md` (person
 gitignored): `key: value` frontmatter plus a body that becomes the worker's brief.
     name: prod-investigator
     description: when the main session should delegate here
-    servers: [mongodb-prod, miter-mcp-prod]   names from the server registry
+    servers: [mongodb-prod, internal-api-prod] names from the server registry
     readonly: true                            block each server's `write_tools`
     model: sonnet                             optional
-    tools: [Read, Grep, mcp__mongodb-prod]    optional allowlist; omit to inherit
+    tools: [Read, Grep, mcp__mongodb-prod]     optional allowlist; omit to inherit
 
 Server definitions live in `profiles/servers.local.json` (gitignored — it holds
 credentials), in the same schema as a `.mcp.json` entry plus two governor keys that

@@ -231,18 +231,24 @@ bin/govctl uninstall-agent
 
 An agent starts its stdio MCP servers as child processes, and a session that ends
 without shutting them down leaves them running, adopted by launchd. Enough of them
-fill memory and swap. Every 5 minutes the daemon stops any process that matches a
-configured pattern, has launchd (pid 1) as its parent, and is older than 2 minutes,
-together with its child processes. A live session's servers always have that session
+fill memory and swap. The reaper is **opt-in**: list the servers that leak on your
+machine in a gitignored `govd/config.local.json` and restart the daemon.
+
+```json
+{ "reap_patterns": ["mongodb-mcp-server"] }
+```
+
+Every 5 minutes the daemon then stops any process that matches a pattern, has launchd
+(pid 1) as its parent, and is older than 2 minutes, together with its child processes. A live session's servers always have that session
 as their parent, so they are never touched. Each stop is written to the audit log
 (`REAP` in `govctl tail`); `govctl status` shows the totals and `govctl reap` runs a
 scan on demand.
 
-| Variable             | Default              | Meaning                                                        |
-| -------------------- | -------------------- | -------------------------------------------------------------- |
-| `GOVD_REAP_PATTERNS` | `mongodb-mcp-server` | comma-separated substrings matched against the command line; empty disables |
-| `GOVD_REAP_INTERVAL` | `300`                | seconds between scans; `0` disables                            |
-| `GOVD_REAP_GRACE`    | `120`                | minimum process age, in seconds, before it can be reaped       |
+| `config.local.json` key | Environment override | Default  | Meaning                                                        |
+| ----------------------- | -------------------- | -------- | -------------------------------------------------------------- |
+| `reap_patterns`         | `GOVD_REAP_PATTERNS` (comma-separated) | none: off | substrings matched against the command line                |
+| `reap_interval_seconds` | `GOVD_REAP_INTERVAL` | `300`    | seconds between scans; `0` disables                            |
+| `reap_grace_seconds`    | `GOVD_REAP_GRACE`    | `120`    | minimum process age, in seconds, before it can be reaped       |
 
 ## Fail-open by design — never silent, never loosening
 

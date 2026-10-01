@@ -165,7 +165,7 @@ SAMPLES = [
     ("security find-generic-password -w -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell",
                                                   "input": {"command": "security find-generic-password -s governor-mcp -a x -w"}}, "ask"),
     ("security dump-keychain -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "security dump-keychain -d"}}, "ask"),
-    ("govctl mcp-headers -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl mcp-headers langfuse-rex"}}, "ask"),
+    ("govctl mcp-headers -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "bin/govctl mcp-headers example-api"}}, "ask"),
     ("cat config backup -> ask", {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "cat ~/.claude.json.bak-govd-20260930-172806"}}, "ask"),
     ("security find-generic-password metadata ok", {"agent": "t", "event": "pre_tool_use", "tool": "shell",
                                                     "input": {"command": "security find-generic-password -s governor-mcp -a x"}}, "allow"),

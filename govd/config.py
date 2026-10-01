@@ -1,3 +1,4 @@
+import json
 import os
 
 GOVD_HOME = os.path.expanduser(os.environ.get("GOVD_HOME", "~/.govd"))
@@ -11,12 +12,22 @@ ADAPTER_ERROR_LOG = os.path.join(GOVD_HOME, "adapter-errors.log")
 
 VERSION = "0.1.0"
 
-# Orphaned MCP server processes (see govd/reaper.py). A comma-separated list of
-# substrings matched against the full command line; empty disables the reaper, as
-# does an interval of 0.
-REAP_PATTERNS = [p.strip() for p in os.environ.get("GOVD_REAP_PATTERNS", "mongodb-mcp-server").split(",") if p.strip()]
-REAP_INTERVAL_SECONDS = int(os.environ.get("GOVD_REAP_INTERVAL", "300"))
-REAP_GRACE_SECONDS = int(os.environ.get("GOVD_REAP_GRACE", "120"))
+# Personal, gitignored daemon settings (govd/config.local.json). A fresh clone has
+# none, so anything configured only here is off for everyone else.
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.local.json")) as _fh:
+        LOCAL = json.load(_fh)
+except (FileNotFoundError, ValueError):
+    LOCAL = {}
+
+# Orphaned MCP server processes (see govd/reaper.py). Opt-in: substrings matched
+# against the full command line, from GOVD_REAP_PATTERNS (comma-separated) or
+# `reap_patterns` in config.local.json. No patterns, or an interval of 0, disables it.
+_patterns = os.environ.get("GOVD_REAP_PATTERNS")
+REAP_PATTERNS = ([p.strip() for p in _patterns.split(",") if p.strip()] if _patterns is not None
+                 else list(LOCAL.get("reap_patterns") or []))
+REAP_INTERVAL_SECONDS = int(os.environ.get("GOVD_REAP_INTERVAL", LOCAL.get("reap_interval_seconds", 300)))
+REAP_GRACE_SECONDS = int(os.environ.get("GOVD_REAP_GRACE", LOCAL.get("reap_grace_seconds", 120)))
 
 
 def ensure_home():
