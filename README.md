@@ -381,7 +381,43 @@ bin/govctl skills-sync                              # write them into every agen
 bin/govctl skills-sync --dry-run                    # show what would change, write nothing
 bin/govctl skills-sync --only triage-merge-conflicts   # one skill
 bin/govctl skills-sync --agents claude_code,codex   # subset of agents
+bin/govctl skills-sync --no-publish                 # local agents only; skip the publish repo
 ```
+
+## Publishing to a repo (cloud agents)
+
+Cloud agent platforms such as [Niteshift](https://docs.niteshift.dev/customizing-agents/plugins)
+don't read `~/.claude/skills`; they install plugins from a git **marketplace** repo. Point
+skillsync at a private repo and every `skills-sync` also rebuilds that repo and pushes it
+if anything changed. The repo is a Claude Code marketplace and a Codex marketplace at
+once, each with one plugin holding the skills, shaped for that agent by the same emit
+as a local sync:
+
+```
+.claude-plugin/marketplace.json     plugins/claude-code/{.claude-plugin/plugin.json, skills/<name>/}
+.agents/plugins/marketplace.json    plugins/codex/{plugin.json, skills/<name>/}
+```
+
+Personal `<name>.local/` skills are published too, so **keep the repo private**.
+Configure it in the gitignored `skillsync/config.local.json`; without it, nothing is
+published:
+
+```json
+{"publish": {"remote": "git@github.com:you/agent-skills.git",
+             "checkout": "~/.govd/skills-publish",
+             "plugin": "governor"}}
+```
+
+`checkout` (default `~/.govd/skills-publish`) is the local clone skillsync commits in;
+`plugin` (default `governor`) names both the marketplace and the plugin, so it installs
+as `governor@governor` and Claude Code invokes its skills as `/governor:<name>`. The
+published repo always carries the full library, even when `--only` or `--agents`
+narrows the local sync. Pass `--no-publish` to skip the step. A failed pull or push
+prints a warning and never fails the local sync.
+
+In Niteshift, open **Settings → Environments → [environment] → Plugins**, add the repo
+as a marketplace (`owner/repo`) on both the Claude Code and Codex tabs, and enable
+`governor@governor`. The Niteshift GitHub App needs access to the repo.
 
 ---
 

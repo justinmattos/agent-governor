@@ -2,7 +2,7 @@
 
 Usage (normally via `bin/govctl`):
     python -m skillsync list
-    python -m skillsync sync [--dry-run] [--only name,name] [--agents claude_code,codex]
+    python -m skillsync sync [--dry-run] [--only name,name] [--agents claude_code,codex] [--no-publish]
 
 A canonical skill is a directory under `skills/`:
     skills/<name>/SKILL.md          required — frontmatter + agent-neutral body
@@ -22,6 +22,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from skillsync.publish import publish
 from skillsync.targets import ALL_TARGETS, TARGETS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -84,6 +85,16 @@ def discover():
     return out
 
 
+def _agents_of(path):
+    """The agents a canonical skill emits to, per its `agents:` frontmatter."""
+    with open(os.path.join(path, "SKILL.md")) as fh:
+        _, control, _ = _split_frontmatter(fh.read())
+    try:
+        return _targets_for(control, None)
+    except ValueError:
+        return []  # already reported as SKIP by the local sync
+
+
 def _targets_for(control, agents_filter):
     wanted = control.get("agents") or ALL_TARGETS
     unknown = [a for a in wanted if a not in TARGETS]
@@ -94,8 +105,12 @@ def _targets_for(control, agents_filter):
     return wanted
 
 
-def emit(name, src_dir, target, dry_run=False):
-    """Materialize one canonical skill into one agent. Returns a status string."""
+def emit(name, src_dir, target, dry_run=False, marker=True):
+    """Materialize one canonical skill into one agent. Returns a status string.
+
+    `marker=False` skips the `.skillsync` marker and agent registration — used when
+    publishing to a repo, where a timestamped marker would make every sync a new commit.
+    """
     with open(os.path.join(src_dir, "SKILL.md")) as fh:
         text = fh.read()
     lines, control, body = _split_frontmatter(text)
@@ -119,6 +134,9 @@ def emit(name, src_dir, target, dry_run=False):
         dst_refs = os.path.join(dest, "references")
         shutil.rmtree(dst_refs, ignore_errors=True)
         shutil.copytree(refs, dst_refs)
+
+    if not marker:
+        return f"wrote {dest}/SKILL.md"
 
     _atomic_write(os.path.join(dest, MARKER), json.dumps({
         "skill": name, "source": src_dir, "synced_at": int(time.time()),
@@ -162,7 +180,8 @@ def cmd_sync(argv):
     only = set(only.split(",")) if only else None
     agents_filter = set(agents_filter.split(",")) if agents_filter else None
 
-    skills = discover()
+    all_skills = discover()
+    skills = all_skills
     if only:
         skills = [(n, p) for n, p in skills if n in only]
         missing = only - {n for n, _ in skills}
@@ -188,6 +207,13 @@ def cmd_sync(argv):
             count += 1
     verb = "would sync" if dry else "synced"
     print(f"{verb} {len(skills)} skill(s) across {count} target(s)")
+
+    # The published repo always carries the full library, whatever --only/--agents
+    # narrowed the local sync to.
+    if "--no-publish" not in argv:
+        status = publish(all_skills, emit, _agents_of, dry_run=dry)
+        if status:
+            print(status)
     return 0
 
 
@@ -205,7 +231,7 @@ COMMANDS = {"list": cmd_list, "sync": cmd_sync}
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in COMMANDS:
-        print("usage: skillsync {list | sync} [--dry-run] [--only a,b] [--agents x,y]",
+        print("usage: skillsync {list | sync} [--dry-run] [--only a,b] [--agents x,y] [--no-publish]",
               file=sys.stderr)
         return 2
     return COMMANDS[argv[0]](argv[1:])
