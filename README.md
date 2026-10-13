@@ -415,9 +415,30 @@ published repo always carries the full library, even when `--only` or `--agents`
 narrows the local sync. Pass `--no-publish` to skip the step. A failed pull or push
 prints a warning and never fails the local sync.
 
+The marketplace carries a second plugin, **`governor-hooks`**: govd's policy hooks and
+the standing instructions, for sandboxes where neither the LaunchAgent nor
+`~/.claude/CLAUDE.md` exists. It bundles `govd/` (personal `*.local.py` rules
+included), `instrsync/`, `instructions/` and the Claude Code and Codex adapters, with
+hook configs generated from `install/`. Every hook runs its adapter with
+`GOVD_EMBEDDED=1` ([`adapters/embedded.py`](adapters/embedded.py)), which changes three
+things:
+
+- **The adapter starts the daemon.** A `SessionStart` hook — or any hook that finds govd
+  down — launches it from the bundle, so per-session state such as `plan_format`'s
+  plan list works as it does locally.
+- **`ask` becomes `deny`.** No one answers a prompt in an unattended task; the reason
+  says so, and the agent can work around it. (Codex already does this everywhere.)
+- **Instructions arrive at `SessionStart`** as `additionalContext`, the way Cursor gets
+  them locally. `protect_governor` also stops expecting the govd hook in user settings,
+  since in a sandbox the hooks come from the plugin.
+
 In Niteshift, open **Settings → Environments → [environment] → Plugins**, add the repo
 as a marketplace (`owner/repo`) on both the Claude Code and Codex tabs, and enable
-`governor@governor`. The Niteshift GitHub App needs access to the repo.
+`governor@governor`, plus `governor-hooks@governor` where you want the policies. Plugins
+are configured per environment, so a shared environment hands your personal skills,
+rules and instructions (pronouns included) to teammates' tasks too — enable
+`governor-hooks` only in an environment that is yours. The Niteshift GitHub App needs
+access to the repo.
 
 ---
 

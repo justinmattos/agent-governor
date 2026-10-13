@@ -12,6 +12,10 @@ ADAPTER_ERROR_LOG = os.path.join(GOVD_HOME, "adapter-errors.log")
 
 VERSION = "0.1.0"
 
+# Running from the hooks plugin inside a cloud agent sandbox (adapters/embedded.py),
+# where the hooks come from the plugin rather than the agent's settings files.
+EMBEDDED = os.environ.get("GOVD_EMBEDDED") == "1"
+
 # Personal, gitignored daemon settings (govd/config.local.json). A fresh clone has
 # none, so anything configured only here is off for everyone else.
 try:

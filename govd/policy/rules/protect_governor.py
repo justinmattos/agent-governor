@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from ...config import DEFAULT_PORT, GOVD_HOME, LAUNCH_AGENT_LABEL, LAUNCH_AGENT_PLIST, REPO_ROOT
+from ...config import DEFAULT_PORT, EMBEDDED, GOVD_HOME, LAUNCH_AGENT_LABEL, LAUNCH_AGENT_PLIST, REPO_ROOT
 from ..engine import ASK, BLOCK, Decision
 from .base import Rule
 from ._shell import _segments, _tokens
@@ -236,7 +236,8 @@ def _check_config_change(data):
         return None
     if settings.get("disableAllHooks") is True:
         return f"sets disableAllHooks in {_display(path)}"
-    if source == "user_settings" and not _has_govd_hook(settings):
+    # Embedded, the hooks ship in a plugin, so settings never carry them.
+    if source == "user_settings" and not EMBEDDED and not _has_govd_hook(settings):
         return f"removes the govd hook from {_display(path)}"
     return None
 

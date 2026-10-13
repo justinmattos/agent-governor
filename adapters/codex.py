@@ -5,6 +5,8 @@ import sys
 import time
 import urllib.request
 
+import embedded
+
 EVENT_MAP = {
     "PreToolUse": "pre_tool_use",
     "PermissionRequest": "pre_tool_use",
@@ -50,6 +52,32 @@ def ask(payload):
         return json.loads(resp.read())
 
 
+def evaluate(payload):
+    try:
+        return ask(payload)
+    except Exception:
+        if not (embedded.EMBEDDED and embedded.ensure_daemon(port(), GOVD_HOME)):
+            raise
+        return ask(payload)
+
+
+def session_start():
+    """Embedded mode only: start govd and hand the agent its standing instructions.
+
+    Locally those live in ~/.codex/AGENTS.md (instrsync); a sandbox has no such file.
+    """
+    embedded.ensure_daemon(port(), GOVD_HOME)
+    try:
+        context = embedded.instructions("codex")
+    except Exception as exc:
+        log_error(f"SessionStart: could not render instructions: {exc!r}")
+        return
+    if context:
+        print(json.dumps({
+            "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}
+        }))
+
+
 def log_error(message):
     try:
         os.makedirs(GOVD_HOME, mode=0o700, exist_ok=True)
@@ -66,6 +94,10 @@ def main():
     event = EVENT_MAP.get(hook_name)
     if not event:
         return 0
+    if event == "session_start":
+        if embedded.EMBEDDED:
+            session_start()
+        return 0
 
     tool_name = payload.get("tool_name", "")
     norm = {
@@ -78,7 +110,7 @@ def main():
         "session_id": payload.get("session_id", ""),
     }
     try:
-        result = ask(norm)
+        result = evaluate(norm)
     except Exception as exc:
         log_error(f"{event} {tool_name or '-'}: daemon unreachable: {exc!r}")
         return 0
