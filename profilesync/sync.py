@@ -11,16 +11,19 @@ gitignored): `key: value` frontmatter plus a body that becomes the worker's brie
     description: when the main session should delegate here
     servers: [mongodb-prod, internal-api-prod] names from the server registry
     readonly: true                            block each server's `write_tools`
+    allow: true                               pre-approve the servers' tools (Claude Code)
     model: sonnet                             optional
     tools: [Read, Grep, mcp__mongodb-prod]     optional allowlist; omit to inherit
 
 Server definitions live in `profiles/servers.local.json` (gitignored — it holds
 credentials), in the same schema as a `.mcp.json` entry plus two governor keys that
-are never emitted: `write_tools` (tool names `readonly` blocks) and `writable`.
+are never emitted: `write_tools` (tool names `readonly` blocks), `writable`, `everyday`
+and `agents`.
 Its top-level `retire` list names older everyday entries the registry replaces.
 A registry server is profile-owned unless it sets `"everyday": true`: a sync removes
 profile-owned servers, and anything under `retire`, from each agent's everyday config,
-and writes `everyday` servers into it.
+and writes `everyday` servers into it. An everyday server's optional `agents` list
+(e.g. `["claude_code"]`) limits it to those agents; the others treat it as profile-owned.
 """
 import json
 import os
@@ -39,7 +42,7 @@ PROFILES_DIR = os.path.join(ROOT, "profiles")
 REGISTRY = os.path.join(PROFILES_DIR, "servers.local.json")
 MANIFEST = os.path.join(config.GOVD_HOME, "profilesync.json")
 RUN_DIR = os.path.join(config.GOVD_HOME, "profiles")
-GOVERNOR_KEYS = {"write_tools", "writable", "everyday"}
+GOVERNOR_KEYS = {"write_tools", "writable", "everyday", "agents"}
 
 _FM_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
 _KEY_RE = re.compile(r"^([A-Za-z0-9_-]+):\s?(.*)$")
@@ -99,6 +102,11 @@ def resolve(profile, registry):
     return servers, disallowed
 
 
+def allow_rules(profiles):
+    """Claude Code permission rules pre-approving every server of each `allow: true` profile."""
+    return sorted({f"mcp__{s}" for p in profiles if p.get("allow") for s in p["servers"]})
+
+
 def _manifest():
     try:
         with open(MANIFEST) as fh:
@@ -141,7 +149,8 @@ def sync(dry_run=False, only=None):
         else:
             kept = sorted(set(previous) | set(written))
         defs = registry.get("servers") or {}
-        everyday = {n: {k: v for k, v in d.items() if k not in GOVERNOR_KEYS} for n, d in defs.items() if d.get("everyday")}
+        everyday = {n: {k: v for k, v in d.items() if k not in GOVERNOR_KEYS} for n, d in defs.items()
+                    if d.get("everyday") and tname in (d.get("agents") or ALL_TARGETS)}
         owned = [n for n in defs if n not in everyday] + list(registry.get("retire") or [])
         removed = target.retire_everyday(owned, dry_run)
         if removed:
@@ -150,6 +159,13 @@ def sync(dry_run=False, only=None):
         if added:
             print(f"  {target.label:12} {'would write' if dry_run else 'wrote'} to everyday config: {', '.join(added)}")
         manifest[tname] = {"agents": kept}
+        if hasattr(target, "set_allow"):
+            rules = allow_rules(parse(p) for p in discover())
+            added, dropped = target.set_allow(rules, (manifest.get(tname + "_allow") or []), dry_run)
+            for verb, past, names in (("add", "added", added), ("remove", "removed", dropped)):
+                if names:
+                    print(f"  {target.label:12} {'would ' + verb if dry_run else past} allow rule(s): {', '.join(names)}")
+            manifest[tname + "_allow"] = rules
     if not dry_run:
         config.ensure_home()
         _atomic_write(MANIFEST, json.dumps(manifest, indent=2))
@@ -209,6 +225,8 @@ def run(name, extra):
             "--append-system-prompt", profile["body"].strip()]
     if disallowed:
         argv += ["--disallowedTools", ",".join(disallowed)]
+    if profile.get("allow"):
+        argv += ["--allowedTools", ",".join(allow_rules([profile]))]
     if profile.get("model"):
         argv += ["--model", profile["model"]]
     os.execvp("claude", argv + extra)

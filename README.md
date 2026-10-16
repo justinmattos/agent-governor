@@ -558,17 +558,28 @@ name: staging-investigator
 description: Read-only investigation of STAGING data. The main session reads this to decide when to delegate.
 servers: [mongodb-staging, internal-api-staging]
 readonly: true
+allow: true            # optional; pre-approve the servers' tools in Claude Code
 model: sonnet          # optional; omit to inherit
 tools: [Read, Grep]    # optional allowlist; omit to inherit the main session's tools
 ---
 The worker's brief: what it's for, how narrowly to query, and what to report back.
 ```
 
+`allow: true` adds an `mcp__<server>` rule for each of the profile's servers to
+`permissions.allow` in `~/.claude/settings.json`, and passes the same rules to a
+`govctl profile` session as `--allowedTools`. A subagent's own file can't pre-approve
+tools, and in auto mode a worker's writes otherwise wait on an approval that a relayed
+request from the main session can't give. Tools that `readonly` blocks stay blocked.
+A sync removes only the rules it added. Codex has no per-tool allow list, so `allow`
+doesn't apply there.
+
 A server that every session should have — an issue tracker you use mid-task, say —
 sets `"everyday": true` in the registry instead of belonging to a profile. A sync writes
 it into each agent's everyday config (`~/.claude.json`, `~/.codex/config.toml`), so it
 is still authored once. Codex reads header values from environment variables, which
 only `govctl profile` sets, so an everyday server can't use keychain headers there.
+Add `"agents": ["claude_code"]` to keep an everyday server out of the other agents,
+for example one whose OAuth client is registered for Claude Code only.
 
 **claude.ai connectors** load into every Claude Code session too, and they can't be
 scoped by any local file. To leave them on in claude.ai chat but out of Claude Code, set

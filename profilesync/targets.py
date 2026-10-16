@@ -87,6 +87,7 @@ class ClaudeCode(Target):
     label = "Claude Code"
     agents_dir = os.path.expanduser("~/.claude/agents")
     config_file = os.path.expanduser("~/.claude.json")
+    settings_file = os.path.expanduser("~/.claude/settings.json")
 
     def agent_path(self, profile):
         return os.path.join(self.agents_dir, profile["name"] + ".md")
@@ -111,6 +112,25 @@ class ClaudeCode(Target):
 
     def write(self, profile, servers, src, dry_run):
         return [self._guarded_write(self.agent_path(profile), self.render(profile, servers, src), dry_run)]
+
+    def set_allow(self, rules, previous, dry_run):
+        """Make `rules` the profile-owned entries of permissions.allow. Returns (added, removed).
+
+        Only rules a previous sync added are ever removed; the user's own stay.
+        """
+        try:
+            with open(self.settings_file) as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
+            data = {}
+        allow = data.setdefault("permissions", {}).setdefault("allow", [])
+        added = [r for r in rules if r not in allow]
+        removed = [r for r in previous if r not in rules and r in allow]
+        if (added or removed) and not dry_run:
+            data["permissions"]["allow"] = [r for r in allow if r not in removed] + added
+            mode = os.stat(self.settings_file).st_mode & 0o777 if os.path.exists(self.settings_file) else 0o644
+            _atomic_write(self.settings_file, json.dumps(data, indent=2) + "\n", mode)
+        return added, removed
 
     def add_everyday(self, servers, dry_run):
         """Write registry servers marked `everyday` into the user-scope config. Returns names changed."""
