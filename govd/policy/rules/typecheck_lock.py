@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import shlex
 import subprocess
@@ -136,6 +138,166 @@ def _is_typecheck(command):
     return _launches(command, _INVOKE_TOKEN)
 
 
+# Scope: a type-check run from a monorepo root without naming a project builds every
+# workspace at once (the root `tsc -b tsconfig.build.json` script, `pnpm -r typecheck`),
+# which is what pushes a single tsgo process past RAM into swap. Require a project.
+_SCRIPT_RUNNERS = frozenset(("pnpm", "npm", "yarn", "bun"))
+_BINARY_RUNNERS = frozenset(("npx", "pnpx", "bunx", "node", "deno"))
+_RUNNER_SUBCOMMANDS = frozenset(("run", "run-script", "exec", "dlx", "x"))
+_BINARY_SUBCOMMANDS = frozenset(("exec", "dlx", "x"))
+_FILTER_FLAGS = frozenset(("--filter", "-F", "--scope", "--projects", "--workspace"))
+_DIR_FLAGS = frozenset(("-C", "--dir", "--prefix", "--cwd"))
+_RECURSIVE_FLAGS = frozenset(("-r", "--recursive", "--workspaces", "-ws"))
+_ROOT_FLAGS = frozenset(("-w", "--workspace-root"))
+_VALUE_FLAGS = _FILTER_FLAGS | _DIR_FLAGS | frozenset((
+    "--workspace-concurrency", "--reporter", "--loglevel", "-p", "--project",
+))
+_AGGREGATE_CONFIGS = frozenset(("tsconfig.build.json",))
+_SCOPE_HINT = (
+    "Name the project instead: `tsc -b backend`, `pnpm --filter backend typecheck`, "
+    "or `cd backend && pnpm typecheck`."
+)
+
+
+def _resolve(base, path):
+    if base is None or "$" in path or "`" in path:
+        return None
+    return os.path.normpath(os.path.join(base, os.path.expanduser(path)))
+
+
+def _is_monorepo_root(d):
+    if not d or not os.path.isdir(d):
+        return False
+    if os.path.isfile(os.path.join(d, "pnpm-workspace.yaml")):
+        return True
+    try:
+        with open(os.path.join(d, "package.json")) as fh:
+            return "workspaces" in json.load(fh)
+    except (OSError, ValueError):
+        return False
+
+
+def _scripts(d):
+    if not d:
+        return {}
+    try:
+        with open(os.path.join(d, "package.json")) as fh:
+            return json.load(fh).get("scripts") or {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _flag(word):
+    name, eq, value = word.partition("=")
+    return name, (value if eq else None)
+
+
+def _tsc_unscoped(args, d):
+    # A project is named by `-p X` or a positional that looks like a path (so the
+    # value of an unknown flag such as `--checkers 2` doesn't count). With none,
+    # tsc builds the tsconfig in the working directory.
+    projects, i = [], 0
+    while i < len(args):
+        name, value = _flag(args[i])
+        if name in ("-p", "--project"):
+            if value is None and i + 1 < len(args):
+                value = args[i + 1]
+                i += 1
+            if value:
+                projects.append(value)
+        elif not args[i].startswith("-") and not _is_noise(args[i]):
+            w = args[i]
+            target = _resolve(d, w)
+            if "/" in w or w.endswith((".json", ".ts", ".tsx")) or (target and os.path.exists(target)):
+                projects.append(w)
+        i += 1
+    if not projects:
+        return _is_monorepo_root(d)
+    for p in projects:
+        target = _resolve(d, p)
+        if target is None:
+            return False
+        if os.path.isdir(target):
+            if not _is_monorepo_root(target):
+                return False
+        elif not (os.path.basename(target) in _AGGREGATE_CONFIGS
+                  and _is_monorepo_root(os.path.dirname(target))):
+            return False
+    return True
+
+
+def _runner_unscoped(exe, rest, d):
+    binary = exe in _BINARY_RUNNERS
+    recursive = False
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w.startswith("-"):
+            name, value = _flag(w)
+            if exe == "npm" and name == "-w":
+                name = "--workspace"  # npm's -w selects a workspace; pnpm's means the root
+            if name in _VALUE_FLAGS and value is None and i + 1 < len(rest):
+                value = rest[i + 1]
+                i += 1
+            if name in _FILTER_FLAGS:
+                if value in ("*", "**", "..."):
+                    recursive = True
+                    i += 1
+                    continue
+                return False
+            if name in _DIR_FLAGS and value:
+                d = _resolve(d, value)
+            elif name in _RECURSIVE_FLAGS:
+                recursive = True
+            elif name in _ROOT_FLAGS:
+                return True
+        elif w in _RUNNER_SUBCOMMANDS and not binary:
+            binary = w in _BINARY_SUBCOMMANDS
+        elif _INVOKE_TOKEN.match(_basename(w)):
+            if recursive:
+                return True
+            args = rest[i + 1:]
+            if exe in _SCRIPT_RUNNERS and not binary and w in _scripts(d):
+                return _is_monorepo_root(d)
+            if _RUN_TOKEN.match(_basename(w)):
+                return _tsc_unscoped(args, d)
+            # A task runner target (`make typecheck`, `nx typecheck backend`): scoped
+            # when it names something after the target.
+            return _is_monorepo_root(d) and not any(not a.startswith("-") for a in args)
+        i += 1
+    return False
+
+
+def _unscoped_typecheck(command, cwd):
+    """The first segment that would type-check a whole monorepo, or None.
+
+    Walks the command's segments tracking `cd`, so `cd backend && tsc -b` is judged
+    from backend. A directory that can't be resolved (`cd $DIR`) is given the benefit
+    of the doubt — this guard steers the common case, the lock still serializes.
+    """
+    if not command:
+        return None
+    d = cwd or None
+    for words in _segments(command):
+        exe, rest = _executable(words)
+        if exe is None:
+            continue
+        b = _basename(exe)
+        if b in ("cd", "pushd"):
+            args = [w for w in rest if not w.startswith("-")]
+            d = _resolve(d, args[0]) if args else os.path.expanduser("~")
+            continue
+        if not _segment_launches(words, _INVOKE_TOKEN):
+            continue
+        if _INVOKE_TOKEN.match(b):
+            hit = _tsc_unscoped(rest, d) if _RUN_TOKEN.match(b) else _is_monorepo_root(d)
+        else:
+            hit = _runner_unscoped(b, rest, d)
+        if hit:
+            return " ".join(words)
+    return None
+
+
 def _running_detail():
     lines = {}
     for pattern in ("tsc", "tsgo"):
@@ -170,6 +332,19 @@ class TypecheckLock(Rule):
         if event.event == "post_tool_use":
             ctx.locks.release(RESOURCE, event.session_id)
             return None
+
+        # Before taking the lock: a denied command never reaches post_tool_use to release it.
+        unscoped = _unscoped_typecheck((event.input or {}).get("command"), event.cwd)
+        if unscoped:
+            return Decision(
+                decision=DENY,
+                reason=(
+                    "This type-check would build the whole monorepo in one process, which "
+                    "outgrows RAM and swaps the machine to a crawl. " + _SCOPE_HINT +
+                    "\nBlocked: " + unscoped
+                ),
+                rule=self.name,
+            )
 
         running = _running_detail()
         if running:

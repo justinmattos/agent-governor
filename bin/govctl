@@ -302,6 +302,15 @@ def selftest(_):
     with open(ok_plan, "w") as fh:
         fh.write(plan_ok)
 
+    # A minimal monorepo so the typecheck scope check has a real root to judge from.
+    mono = os.path.join(plan_root, "mono")
+    os.makedirs(os.path.join(mono, "backend"))
+    for rel, body in (("pnpm-workspace.yaml", "packages: ['*']\n"), ("tsconfig.build.json", "{}"),
+                      ("package.json", '{"scripts": {"tsc": "tsc -b tsconfig.build.json"}}'),
+                      ("backend/tsconfig.json", "{}"), ("backend/package.json", '{"scripts": {"typecheck": "tsc -b"}}')):
+        with open(os.path.join(mono, rel), "w") as fh:
+            fh.write(body)
+
     samples = SAMPLES + [
         ("disableAllHooks config change -> block",
          {"agent": "t", "event": "config_change", "tool": None,
@@ -322,6 +331,12 @@ def selftest(_):
          {"agent": "t", "event": "pre_tool_use", "tool": "plan", "input": {"plan": "## Context\n\nstub only"}}, "deny", "plan_format"),
         ("ExitPlanMode conforming proposal -> allow",
          {"agent": "t", "event": "pre_tool_use", "tool": "plan", "input": {"plan": plan_ok}}, "allow"),
+        ("root pnpm tsc (whole monorepo) -> deny",
+         {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "pnpm tsc"}, "cwd": mono}, "deny"),
+        ("root bare tsc -b -> deny",
+         {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "tsc -b"}, "cwd": mono}, "deny"),
+        ("root pnpm -r typecheck -> deny",
+         {"agent": "t", "event": "pre_tool_use", "tool": "shell", "input": {"command": "pnpm -r typecheck"}, "cwd": mono}, "deny"),
     ]
     loaded = set((_health() or {}).get("rules") or [])
     ok = True
@@ -364,6 +379,14 @@ def selftest(_):
         urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{_port()}/v1/evaluate",
                                                       data=json.dumps({"event": "session_end", "session_id": sid}).encode(),
                                                       headers={"Content-Type": "application/json"}), timeout=2)
+    # Scoped runs are checked in-process: through the daemon an allow would also
+    # depend on no other tsc running on the machine.
+    from govd.policy.rules.typecheck_lock import _unscoped_typecheck
+    for cmd in ("tsc -b backend", "pnpm --filter backend typecheck", "pnpm -C backend typecheck",
+                "cd backend && pnpm typecheck", "npx tsc -p backend/tsconfig.json --checkers 2"):
+        flagged = _unscoped_typecheck(cmd, mono)
+        ok = ok and not flagged
+        print(f"  {'FAIL' if flagged else 'PASS'}  scoped type-check not flagged: {cmd}")
     reaped_ok = _reaper_selftest()
     ok = ok and reaped_ok
     print(f"  {'PASS' if reaped_ok else 'FAIL'}  reaper stops an orphaned MCP-like process and spares a parented one")
