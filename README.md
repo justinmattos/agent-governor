@@ -324,6 +324,7 @@ on this maintainer's machine; see [Personal skills](#personal-skills).
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | `triage-pr-review-comments` | Triage unresolved review comments across a PR or stack (bot comments by default): fix valid issues on the right branch, reply to bot false positives, draft human replies for approval, then submit. | slash-only (`disable-model-invocation`)           |
 | `triage-merge-conflicts`    | Restack a branch or Graphite stack onto the latest trunk and resolve conflicts up the stack, gated on a mandatory lint/format pass before pushing so restack-reordered imports don't fail CI post-merge. | "resolve merge conflicts", "restack this", "rebase onto main" |
+| `probe-blueprint`           | Pressure-test a draft blueprint or design doc: probe each design decision one Socratic question at a time into a numbered decision log, then review rewritten sections against it. Never edits the doc. | "probe this blueprint", "challenge my design doc", "poke holes in this" |
 
 ## Personal skills
 
