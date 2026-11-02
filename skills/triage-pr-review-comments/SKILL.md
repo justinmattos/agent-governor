@@ -71,16 +71,34 @@ Analyze one PR's comments per worker (in parallel if this agent supports subagen
 
 Only resolve bot threads. Never auto-resolve human threads.
 
-**Human comments (draft, then confirm before posting):** Present every human comment as its own inline block — **not** a table (a table cell can't hold a readable diff). Give enough context to follow each thread without opening GitHub. Each block has four parts:
+**Human comments (draft, then confirm before posting):** Group the comments into clusters, give each one a short ID, then present every comment as its own inline block — **not** a table (a table cell can't hold a readable diff). Give enough context to follow each thread without opening GitHub.
 
-1. **Header** — `PR #<n> (<branch>) · <path>:<line> · <category> (<author>)`, where category is `blocking-change` / `nit` / `question` / `suggestion` / `discussion`.
+**Clusters and numbering** — so the user can direct many comments at once by ID:
+
+- **Cluster by theme when relevant.** When two or more comments share a theme — the same concern (naming, error handling, test coverage), the same fix pattern, or the same reviewer question asked in several places — group them into a cluster with a short theme label. Don't force it: a comment with no natural partner goes in a final **Other** cluster, and with only one or two comments in total, skip the theme labels and use a single cluster.
+- **Number every comment.** Letter clusters `A`, `B`, `C`…; number comments within a cluster `A1`, `A2`, `B1`…. Keep the IDs stable for the rest of the session — if you re-present after feedback, don't renumber.
+- **Lead with an index.** Before the blocks, list each cluster as `**A — <theme>** (<n> comments): <one-line shared recommendation>`, followed by one line per comment: `A1 · PR #<n> · <path>:<line> · <category> (<author>) — <gist>`. The user should be able to direct the whole batch from the index alone.
+- **Order** clusters by the lowest stack position among their comments; within a cluster, order comments bottom-to-top by stack position.
+
+Each block has four parts:
+
+1. **Header** — `<ID> · PR #<n> (<branch>) · <path>:<line> · <category> (<author>)`, where category is `blocking-change` / `nit` / `question` / `suggestion` / `discussion`. Put a `### <ID letter> — <theme>` heading before each cluster's first block.
 2. **Inline diff** — a `diff` fenced block anchored on `path:line`, with a few lines of context. Include `+` lines only when the proposed step involves a code fix; for a `reply`-only or `flag` step, show just the flagged lines. If the thread is on an outdated line, quote the outdated code.
 3. **Original comment** — the reviewer's comment verbatim, plus any prior back-and-forth on the thread.
 4. **Proposed next step** — `fix` / `reply` / `fix-and-reply` / `flag`, with the draft reply and/or a one-line fix summary.
 
 Example:
 
-**PR #123** (`ab/eco-1234`) · `backend/src/pay.ts:42` · nit (alice)
+**A — Money rounding** (2 comments): round to cents at each return site.
+- A1 · PR #123 · `backend/src/pay.ts:42` · nit (alice) — total can return fractional cents
+- A2 · PR #124 · `backend/src/refund.ts:18` · nit (alice) — same issue in refund total
+
+**B — Other** (1 comment)
+- B1 · PR #124 · `backend/src/refund.ts:3` · question (bob) — why a new module instead of extending pay.ts?
+
+### A — Money rounding
+
+**A1** · **PR #123** (`ab/eco-1234`) · `backend/src/pay.ts:42` · nit (alice)
 
 ```diff
    const total = items.reduce((a, i) => a + i.cost, 0)
@@ -92,7 +110,9 @@ Example:
 
 **Proposed next step:** `fix-and-reply` — round to cents as above; reply "Good catch, rounding to cents."
 
-Order the blocks bottom-to-top by stack position so they read in the order you'll apply them. Wait for approval, then execute only approved items: apply approved fixes, post approved replies (post the user's edit if they changed a draft), skip rejected ones, and leave threads they'll handle themselves untouched.
+*(A2 and B1 follow as their own blocks.)*
+
+Wait for approval. The user directs by ID: a cluster ID (`A: approve`) applies to every comment in it, an item ID (`A2: skip`, `B1: reply "…"`) overrides its cluster, and anything unmentioned is approved only if they say so (e.g. "rest approved"). If a direction is ambiguous, ask about just those IDs. Then execute only approved items: apply approved fixes, post approved replies (post the user's edit if they changed a draft), skip rejected ones, and leave threads they'll handle themselves untouched. Fixes still apply bottom-to-top by stack position, regardless of cluster order.
 
 **Apply a fix:**
 
@@ -112,7 +132,7 @@ Present a summary (omit empty sections):
 
 - **Valid bugs fixed** — PR · bug · severity · fix
 - **Bot false positives dismissed** — PR · bug · why invalid
-- **Human comments addressed** — PR · comment (author) · category · resolution (fixed / replied / flagged for you)
+- **Human comments addressed** — ID · PR · comment (author) · category · resolution (fixed / replied / flagged for you)
 
 ## Key patterns
 
