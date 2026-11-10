@@ -1,7 +1,6 @@
 ---
 name: triage-pr-review-comments
 description: Triage unresolved review comments across a PR or a whole stack. Defaults to review-bot comments only (checking in only if a PR or stack has nothing but human comments), fetches unresolved threads for every PR, analyzes them in parallel, fixes valid issues on the correct branch, replies to bot false positives, drafts replies to human reviewers for approval before posting, and submits. Use when the user asks to review, triage, or address bot and/or human reviewer comments on a PR or stack.
-disable-model-invocation: true
 ---
 
 # Triage PR Review Comments
